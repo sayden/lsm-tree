@@ -7,98 +7,111 @@ const WalError = error{
     MaxSizeReached,
 } || RecordError || std.mem.Allocator.Error;
 
-fn Wal(comptime size: usize, comptime RecordType: type) type {
+fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
     return struct {
         const Self = @This();
 
-        current_offset: usize,
+        current_size: usize,
+        max_size: usize,
+
         records: usize,
-        maxsize: usize,
+        mem: []RecordType,
 
-        mem: [size]u8,
-
-        pub fn init(self: *Self, _: *std.mem.Allocator) !*Self {
-            self.current_offset = 0;
+        pub fn init(self: *Self, allocator: *std.mem.Allocator) !*Self {
+            self.current_size = 0;
             self.records = 0;
-            self.maxsize = 1000 * size;
-            // self.mem = try allocator.alloc(u8, size);
+            self.max_size = size_in_bytes;
+            self.mem = try allocator.alloc(RecordType, size_in_bytes / RecordType.minimum_size());
 
             return self;
         }
 
-        pub fn add(self: *Self, bytes: []u8) WalError!void {
+        pub fn add_record(self: *Self, r: RecordType) WalError!void {
+            const record_size = r.size();
+
             // Check if there's available space in the WAL
-            if (self.mem.len - self.current_offset < bytes.len) {
+            if (self.current_size + record_size > self.max_size or self.records >= self.mem.len - 1) {
                 return WalError.MaxSizeReached;
             }
 
-            for (bytes) |b, i| {
-                self.mem[self.current_offset + i] = b;
-            }
-
-            //Write operation success
+            self.mem[self.records] = r;
             self.records += 1;
-            self.current_offset += bytes.len;
-        }
-
-        pub fn add_record(self: *Self, r: *const RecordType, alloc: *std.mem.Allocator) WalError!void {
-            const record_length = r.len();
-
-            // Check if there's available space in the WAL
-            if (self.mem.len - self.current_offset < record_length) {
-                return WalError.MaxSizeReached;
-            }
-
-            var buf: []u8 = try alloc.alloc(u8, record_length);
-            defer alloc.free(buf);
-            try r.bytes(buf);
-
-            return self.add(buf);
+            self.current_size += record_size;
         }
 
         // TODO Find returns first ocurrence when it should be returning last ocurrence found which
         // is the most recent
         pub fn find(self: *Self, key_to_find: []u8) WalError!?RecordType {
-            var offset: usize = 0;
-            var r: RecordType = undefined;
-
-            while (offset < self.current_offset) {
-                r = RecordType.read_record(self.mem[offset..]);
+            for (self.mem) |r| {
                 if (std.mem.eql(u8, r.key, key_to_find)) {
                     return r;
                 }
-                offset += r.len();
             }
 
             return null;
         }
+
+        pub fn sort(self: *Self) void {
+            std.sort.sort(RecordType, self.mem[0..self.records], {}, lexicographical_compare);
+        }
+
+        fn lexicographical_compare(_: void, lhs: RecordType, rhs: RecordType) bool {
+            const smaller_size: usize = if (lhs.key.len > rhs.key.len) rhs.key.len else lhs.key.len;
+
+            var i: usize = 0;
+            while (i < smaller_size) {
+                if (lhs.key[i] == rhs.key[i]) {
+                    i += 1;
+                    continue;
+                } else if (lhs.key[i] > rhs.key[i]) {
+                    return true;
+                } else {
+                    return false;
+                }
+            }
+
+            return false;
+        }
     };
 }
 
-test "add bytes" {
-    var alloc = std.testing.allocator;
-    var arena = std.heap.ArenaAllocator.init(alloc);
+test "sort a wal" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
+    const alloc = &arena.allocator;
 
-    var hello = "hello".*;
-    var world = "world".*;
+    var temp = try alloc.create(Wal(100, Record(u32, u64)));
+    var wal = try temp.init(alloc);
 
-    const allocator = &arena.allocator;
-    var temp = try allocator.create(Wal(100, u8));
+    var key1 = "hellos".*;
+    var value1 = "world".*;
+    const r = Record(u32, u64){
+        .key = key1[0..],
+        .value = value1[0..],
+    };
+    try wal.add_record(r);
 
-    var wal = try temp.init(allocator);
-    try wal.add(hello[0..]);
+    var key2 = "hello".*;
+    var value2 = "world".*;
+    const r2 = Record(u32, u64){
+        .key = key2[0..],
+        .value = value2[0..],
+    };
+    try wal.add_record(r2);
 
-    try std.testing.expect(wal.records == 1);
-    try std.testing.expect(wal.current_offset == hello.len);
-    try std.testing.expect(wal.mem.len == 100);
-    try std.testing.expect(std.mem.eql(u8, wal.mem[0..wal.current_offset], hello[0..]));
+    std.debug.print("\nKey ({d}): {s}\n", .{ 0, wal.mem[0].key });
+    std.debug.print("Key ({d}): {s}\n", .{ 1, wal.mem[1].key });
 
-    try wal.add(world[0..]);
-    try std.testing.expect(wal.records == 2);
-    try std.testing.expect(wal.current_offset == hello.len + world.len);
-    try std.testing.expect(wal.mem.len == 100);
-    try std.testing.expect(std.mem.eql(u8, wal.mem[0..wal.current_offset], "helloworld"));
+    try std.testing.expect(std.mem.eql(u8, wal.mem[0].key, r.key));
+    try std.testing.expect(std.mem.eql(u8, wal.mem[1].key, r2.key));
+
+    wal.sort();
+
+    std.debug.print("\nKey ({d}): {s}\n", .{ 0, wal.mem[0].key });
+    std.debug.print("Key ({d}): {s}\n", .{ 1, wal.mem[1].key });
+
+    try std.testing.expect(std.mem.eql(u8, wal.mem[0].key, r.key));
+    try std.testing.expect(std.mem.eql(u8, wal.mem[1].key, r2.key));
 }
 
 test "add record" {
@@ -106,7 +119,7 @@ test "add record" {
     defer arena.deinit();
     const alloc = &arena.allocator;
 
-    var temp = try alloc.create(Wal(std.mem.page_size * 1000, Record(u32, u64)));
+    var temp = try alloc.create(Wal(100, Record(u32, u64)));
     var wal = try temp.init(alloc);
 
     var key = "hello".*;
@@ -115,11 +128,10 @@ test "add record" {
         .key = key[0..],
         .value = value[0..],
     };
-    try wal.add_record(&r, alloc);
+    try wal.add_record(r);
 
     try std.testing.expect(wal.records == 1);
-    try std.testing.expect(wal.current_offset == r.len());
-    try std.testing.expectStringEndsWith(wal.mem[0..22], "helloworld");
+    try std.testing.expect(wal.current_size == r.size());
 }
 
 test "max size reached" {
@@ -127,8 +139,10 @@ test "max size reached" {
     defer arena.deinit();
     const alloc = &arena.allocator;
 
-    var temp = try alloc.create(Wal(10, Record(u32, u64)));
+    var temp = try alloc.create(Wal(23, Record(u32, u64)));
     var wal = try temp.init(alloc);
+
+    try std.testing.expect(wal.mem.len == 1);
 
     var key = "hello".*;
     var value = "world".*;
@@ -137,14 +151,14 @@ test "max size reached" {
         .value = value[0..],
     };
 
-    if (wal.add_record(&r, alloc)) |_| unreachable else |err| {
+    if (wal.add_record(r)) |_| unreachable else |err| {
         try std.testing.expect(err == WalError.MaxSizeReached);
     }
 
-    var buf: [22]u8 = undefined;
+    var buf: [24]u8 = undefined;
     try r.bytes(buf[0..]);
 
-    if (wal.add(buf[0..])) |_| unreachable else |err| {
+    if (wal.add_record(r)) |_| unreachable else |err| {
         try std.testing.expect(err == WalError.MaxSizeReached);
     }
 }
@@ -163,11 +177,10 @@ test "find a key" {
         .key = key[0..],
         .value = value[0..],
     };
-    try wal.add_record(&r, alloc);
+    try wal.add_record(r);
 
     try std.testing.expect(wal.records == 1);
-    try std.testing.expect(wal.current_offset == r.len());
-    try std.testing.expectStringEndsWith(wal.mem[0..22], "helloworld");
+    try std.testing.expect(wal.current_size == r.size());
 
     const maybe_record = try wal.find(key[0..]);
     try std.testing.expect(std.mem.eql(u8, maybe_record.?.value, value[0..]));

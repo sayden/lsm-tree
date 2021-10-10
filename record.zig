@@ -1,4 +1,6 @@
 const std = @import("std");
+const expect = std.testing.expect;
+const expectEq = std.testing.expectEqual;
 
 pub const RecordError = error{ BufferTooSmall, KeyTooBig };
 
@@ -15,12 +17,16 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
         key: []u8,
         value: []u8,
 
-        var length: ?RecordLengthType = null;
+        var record_size_in_bytes: ?RecordLengthType = null;
 
         const Self = @This();
 
-        pub fn len(self: *const Self) RecordLengthType {
-            if (length)|l|{
+        pub fn minimum_size() usize {
+            return @sizeOf(KeyLengthType) + @sizeOf(RecordLengthType) + 2;
+        }
+
+        pub fn size(self: *const Self) RecordLengthType {
+            if (record_size_in_bytes) |l| {
                 return l;
             }
 
@@ -31,8 +37,8 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
             const key_length = @sizeOf(KeyLengthType);
 
             // Total
-            length = record_length + key_length + self.key.len + self.value.len;
-            return length.?;
+            record_size_in_bytes = record_length + key_length + self.key.len + self.value.len;
+            return record_size_in_bytes.?;
         }
 
         /// Writes into the provided buf the data of the record in a contiguous array as described
@@ -40,9 +46,9 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
         pub fn bytes(self: *const Self, buf: []u8) RecordError!void {
             var offset: usize = 0;
 
-            const record_size = self.len();
+            const record_size = self.size();
 
-            //Abord early if necessary
+            //Abort early if necessary
             if (buf.len < record_size) {
                 return RecordError.BufferTooSmall;
             }
@@ -73,7 +79,7 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
         pub fn read_key(buf: []u8) []u8 {
             // read the key length
             const record_length_size = @sizeOf(RecordLengthType);
-            const bytes_for_key_length = buf[record_length_size..record_length_size+@sizeOf(KeyLengthType)];
+            const bytes_for_key_length = buf[record_length_size .. record_length_size + @sizeOf(KeyLengthType)];
             const key_length = std.mem.readIntSliceLittle(KeyLengthType, bytes_for_key_length);
 
             // read as many bytes as defined before to get the key
@@ -89,7 +95,7 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
             const record_length = std.mem.readIntSliceLittle(RecordLengthType, bytes_for_record_length);
 
             // read the key length
-            const bytes_for_key_length = buf[bytes_for_record_length.len..bytes_for_record_length.len+@sizeOf(KeyLengthType)];
+            const bytes_for_key_length = buf[bytes_for_record_length.len .. bytes_for_record_length.len + @sizeOf(KeyLengthType)];
             const key_length = std.mem.readIntSliceLittle(KeyLengthType, bytes_for_key_length);
 
             // read as many bytes as defined before to get the key
@@ -109,6 +115,23 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
     };
 }
 
+test "record size" {
+    var key = "hello".*;
+    var value = "world".*;
+
+    const r = Record(u32, u64){
+        .key = key[0..],
+        .value = value[0..],
+    };
+
+    const size = r.size();
+    try expectEq(@as(u64, 22), size);
+}
+
+test "minimum size" {
+    try expect(Record(u32, u64).minimum_size() == 14);
+}
+
 test "bytes returns a contiguous array with the record" {
     var key = "hello".*;
     var value = "world".*;
@@ -118,13 +141,13 @@ test "bytes returns a contiguous array with the record" {
         .value = value[0..],
     };
 
-    var page = std.heap.page_allocator;
-    var buf = try page.alloc(u8, r.len());
-    defer page.free(buf);
+    var allocator = std.testing.allocator;
+    var buf = try allocator.alloc(u8, r.size());
+    defer allocator.free(buf);
     try r.bytes(buf);
     try std.testing.expectStringEndsWith(buf, "helloworld");
-    try std.testing.expect(!std.mem.eql(u8, buf, "helloworld"));
-    try std.testing.expect(r.len() == 22);
+    try expect(!std.mem.eql(u8, buf, "helloworld"));
+    try expectEq(@as(usize, 22), r.size());
 }
 
 test "having an slice, read a record starting at an offset" {
@@ -138,9 +161,9 @@ test "having an slice, read a record starting at an offset" {
 
     const RecordType = Record(u32, u64);
     const r = RecordType.read_record(record_bytes[0..]);
-    try std.testing.expect(std.mem.eql(u8, r.key, "hello"));
-    try std.testing.expect(std.mem.eql(u8, r.value, "world"));
+    try expect(std.mem.eql(u8, r.key, "hello"));
+    try expect(std.mem.eql(u8, r.value, "world"));
 
     const key = RecordType.read_key(record_bytes[0..]);
-    try std.testing.expect(std.mem.eql(u8, key, "hello"));
+    try expect(std.mem.eql(u8, key, "hello"));
 }
