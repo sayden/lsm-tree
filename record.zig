@@ -103,10 +103,20 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
             return key;
         }
 
-        pub fn read_record(buf: []u8) Self {
+        pub fn read_record(buf: []u8) ?Self {
+            // Check if there's enough data to read the record size
+            if (buf.len < @sizeOf(RecordLengthType)){
+                return null;
+            }
+
             //Read the record length bytes (4 or 8 usually) to get the total length of the record
             const bytes_for_record_length = buf[0..@sizeOf(RecordLengthType)];
             const record_length = std.mem.readIntSliceLittle(RecordLengthType, bytes_for_record_length);
+
+            // check if the buffer actually has the amount of bytes that the record_length says
+            if (buf.len< record_length){
+                return null;
+            }
 
             // read the key length
             const bytes_for_key_length = buf[bytes_for_record_length.len .. bytes_for_record_length.len + @sizeOf(KeyLengthType)];
@@ -184,10 +194,21 @@ test "record.having an slice, read a record starting at an offset" {
     };
 
     const RecordType = Record(u32, u64);
-    const r = RecordType.read_record(record_bytes[0..]);
+    const r = RecordType.read_record(record_bytes[0..]).?;
     try expect(std.mem.eql(u8, r.key, "hello"));
     try expect(std.mem.eql(u8, r.value, "world"));
 
     const key = RecordType.read_key(record_bytes[0..]);
     try expect(std.mem.eql(u8, key, "hello"));
+
+    // return none if there's not enough data for a record in the buffer
+    // starting from 20, there's not enough data to read a potential record size
+    const r2 = RecordType.read_record(record_bytes[20..]);
+    try expect(r2 == null);
+
+    // return none in case of some corruption where I can read the record
+    // size but there's not enough data. For example if record size says that
+    // the record has 30 bytes but the buffer actually has 10
+    const r3 = RecordType.read_record(record_bytes[0..10]);
+    try expect(r3 == null);
 }

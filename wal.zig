@@ -8,6 +8,31 @@ pub const WalError = error{
     MaxSizeReached,
 } || RecordError || std.mem.Allocator.Error;
 
+pub fn RecordTypeIterator(comptime WalType: type, comptime RecordType: type) type {
+    return struct {
+        const Self = @This();
+
+        pos: usize = 0,
+        wal: *WalType,
+
+        pub fn init(wal: *WalType) Self {
+            return Self{
+                .wal = wal,
+            };
+        }
+
+        pub fn next(self: *Self) ?RecordType {
+            if (self.pos == self.wal.records) {
+                return null;
+            }
+
+            const r = self.wal.mem[self.pos];
+            self.pos += 1;
+            return r;
+        }
+    };
+}
+
 pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
     return struct {
         const Self = @This();
@@ -28,7 +53,7 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
         }
 
         pub fn add_record(self: *Self, r: *RecordType) WalError!void {
-            const record_size:usize = r.size();
+            const record_size: usize = r.size();
 
             // Check if there's available space in the WAL
             if (self.current_size + record_size > self.max_size or self.records >= self.mem.len - 1) {
@@ -74,7 +99,38 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
             // if all chars were equal, return shortest as true
             return (lhs.key.len < rhs.key.len);
         }
+
+        pub fn iterator(self: *Self) RecordTypeIterator(Self, RecordType) {
+            const iter = RecordTypeIterator(Self, RecordType).init(self);
+
+            return iter;
+        }
     };
+}
+
+test "wal.iterator" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const alloc = &arena.allocator;
+
+    var temp = try alloc.create(Wal(100, Record(u32, u64)));
+    const wal = try temp.init(alloc);
+
+    var r0 = try rec.mockRecord("hell0", "world", alloc);
+    try wal.add_record(&r0);
+    var r1 = try rec.mockRecord("hell1", "world", alloc);
+    try wal.add_record(&r1);
+    var r3 = try rec.mockRecord("hell2", "world", alloc);
+    try wal.add_record(&r3);
+
+    var iter = wal.iterator();
+
+    var total: usize = 0;
+    while (iter.next()) |record| {
+        try std.testing.expectEqualSlices(u8, "world", record.value);
+        total += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), total);
 }
 
 test "wal.lexicographical_compare" {
