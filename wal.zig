@@ -8,30 +8,6 @@ pub const WalError = error{
     MaxSizeReached,
 } || RecordError || std.mem.Allocator.Error;
 
-pub fn RecordTypeIterator(comptime WalType: type, comptime RecordType: type) type {
-    return struct {
-        const Self = @This();
-
-        pos: usize = 0,
-        wal: *WalType,
-
-        pub fn init(wal: *WalType) Self {
-            return Self{
-                .wal = wal,
-            };
-        }
-
-        pub fn next(self: *Self) ?RecordType {
-            if (self.pos == self.wal.records) {
-                return null;
-            }
-
-            const r = self.wal.mem[self.pos];
-            self.pos += 1;
-            return r;
-        }
-    };
-}
 
 pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
     return struct {
@@ -40,12 +16,12 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
         current_size: usize,
         max_size: usize,
 
-        records: usize,
+        total_records: usize,
         mem: []RecordType,
 
         pub fn init(self: *Self, allocator: *std.mem.Allocator) !*Self {
             self.current_size = 0;
-            self.records = 0;
+            self.total_records = 0;
             self.max_size = size_in_bytes;
             self.mem = try allocator.alloc(RecordType, size_in_bytes / RecordType.minimum_size());
 
@@ -56,12 +32,12 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
             const record_size: usize = r.size();
 
             // Check if there's available space in the WAL
-            if (self.current_size + record_size > self.max_size or self.records >= self.mem.len - 1) {
+            if (self.current_size + record_size > self.max_size or self.total_records >= self.mem.len - 1) {
                 return WalError.MaxSizeReached;
             }
 
-            self.mem[self.records] = r.*;
-            self.records += 1;
+            self.mem[self.total_records] = r.*;
+            self.total_records += 1;
             self.current_size += record_size;
         }
 
@@ -78,7 +54,7 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
         }
 
         pub fn sort(self: *Self) void {
-            std.sort.sort(RecordType, self.mem[0..self.records], {}, lexicographical_compare);
+            std.sort.sort(RecordType, self.mem[0..self.total_records], {}, lexicographical_compare);
         }
 
         fn lexicographical_compare(_: void, lhs: RecordType, rhs: RecordType) bool {
@@ -100,11 +76,32 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
             return (lhs.key.len < rhs.key.len);
         }
 
-        pub fn iterator(self: *Self) RecordTypeIterator(Self, RecordType) {
-            const iter = RecordTypeIterator(Self, RecordType).init(self);
+        pub fn iterator(self: *Self) RecordTypeIterator {
+            const iter = RecordTypeIterator.init(self.mem[0..self.total_records]);
 
             return iter;
         }
+
+        const RecordTypeIterator = struct {
+            pos: usize = 0,
+            records: []RecordType,
+
+            pub fn init(records: []RecordType) RecordTypeIterator {
+                return RecordTypeIterator{
+                    .records = records,
+                };
+            }
+
+            pub fn next(self: *RecordTypeIterator) ?RecordType {
+                if (self.pos == self.records.len) {
+                    return null;
+                }
+
+                const r = self.records[self.pos];
+                self.pos += 1;
+                return r;
+            }
+        };
     };
 }
 
@@ -178,7 +175,7 @@ test "wal.add record" {
     var r = try rec.mockRecord("hello", "world", alloc);
     try wal.add_record(&r);
 
-    try std.testing.expect(wal.records == 1);
+    try std.testing.expect(wal.total_records == 1);
     try std.testing.expect(wal.current_size == r.size());
 }
 
@@ -216,7 +213,7 @@ test "wal.find a key" {
     var r = try rec.mockRecord("hello", "world", alloc);
     try wal.add_record(&r);
 
-    try std.testing.expect(wal.records == 1);
+    try std.testing.expect(wal.total_records == 1);
     try std.testing.expect(wal.current_size == r.size());
 
     const maybe_record = wal.find(r.key[0..]);
