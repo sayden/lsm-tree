@@ -90,9 +90,9 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
                     i += 1;
                     continue;
                 } else if (lhs.key[i] > rhs.key[i]) {
-                    return true;
-                } else {
                     return false;
+                } else {
+                    return true;
                 }
             }
 

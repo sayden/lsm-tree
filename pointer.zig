@@ -33,9 +33,36 @@ pub fn Pointer(comptime KeyLengthType: type) type {
 
             return offset;
         }
+
+        pub fn bytesLength(self: *const Self) usize {
+            return Self.key_size + self.key.len + @sizeOf(@TypeOf(self.byte_offset));
+        }
     };
 }
 
-// pub fn readPointer(bytes: []u8) *Pointer {}
+pub fn readPointer(comptime KeyLengthType: type, bytes: []u8) Pointer(KeyLengthType) {
+    const T = Pointer(KeyLengthType);
 
-// pub fn toPointerAlloc(r: *Record, allocator: *std.mem.Allocator) *Pointer {}
+    var key_length = std.mem.readIntSliceLittle(KeyLengthType, bytes[0..T.key_size]);
+    var byte_offset = std.mem.readIntSliceLittle(usize, bytes[T.key_size + key_length .. T.key_size + key_length + 8]);
+    return Pointer(KeyLengthType){
+        .key = bytes[T.key_size .. T.key_size + key_length],
+        .byte_offset = byte_offset,
+    };
+}
+
+test "pointer.read" {
+    var buf: [17]u8 = undefined;
+    std.mem.writeIntSliceLittle(u32, buf[0..4], 5);
+    std.mem.copy(u8, buf[4..9], "hello");
+    std.mem.writeIntSliceLittle(usize, buf[9..], 99);
+
+    const p = readPointer(u32, &buf);
+    const eq = std.testing.expectEqual;
+    try eq(@as(usize, 5), p.key.len);
+    try eq(@as(usize, 99), p.byte_offset);
+
+    try std.testing.expectEqualSlices(u8, "hello", p.key);
+
+    try eq(@as(usize, 17), p.bytesLength());
+}
