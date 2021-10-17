@@ -44,8 +44,8 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
             return s;
         }
 
-        pub fn init_string(key: []const u8, value: []const u8, alloc:*std.mem.Allocator)!*Self{
-            return Record(KeyLengthType,RecordLengthType).init(key[0..], value[0..], alloc);
+        pub fn init_string(key: []const u8, value: []const u8, alloc: *std.mem.Allocator) !*Self {
+            return Record(KeyLengthType, RecordLengthType).init(key[0..], value[0..], alloc);
         }
 
         fn key_size(self: *const Self) usize {
@@ -100,7 +100,16 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
             return self.record_size_in_bytes;
         }
 
-        pub fn read_key(buf: []u8) []u8 {
+        /// returns a slice with the pair key_length (KeyLengthType bytes) + key in bytes.
+        /// Caller is responsible of freeing the slice
+        pub fn read_key_and_length_alloc(self: *Self, allocator: *std.mem.Allocator) ![]u8 {
+            var buf = try allocator.alloc(u8, @sizeOf(KeyLengthType) + self.key_size());
+            self.read_key_and_length(&buf);
+            return buf;
+        }
+
+        /// fills the provided buffer with the pair key_length (KeyLengthType bytes) + key in bytes
+        pub fn read_key_and_length(self: *Self, buf: []u8) []u8 {
             // read the key length
             const record_length_size = @sizeOf(RecordLengthType);
             const bytes_for_key_length = buf[record_length_size .. record_length_size + @sizeOf(KeyLengthType)];
@@ -108,7 +117,9 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
 
             // read as many bytes as defined before to get the key
             const key_start = record_length_size + bytes_for_key_length.len;
-            const key = buf[key_start .. key_start + key_length];
+            const key = self.key[key_start .. key_start + key_length];
+
+            std.mem.copy(u8, buf, key);
 
             return key;
         }
@@ -144,6 +155,24 @@ pub fn Record(comptime KeyLengthType: type, comptime RecordLengthType: type) typ
 
             var r = Self.init(key, value, allocator) catch return null;
             return r;
+        }
+
+        pub fn getPointerBytesForOffset(self: *Self, buf: []u8) usize {
+            var offset: usize = 0;
+
+            // key length
+            std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + self.key_size()], @intCast(KeyLengthType, self.key.len));
+            offset += self.key_size();
+
+            // key
+            std.mem.copy(u8, buf[offset .. offset + self.key.len], self.key);
+            offset += self.key.len;
+
+            //offset
+            std.mem.writeIntSliceLittle(usize, buf[offset .. offset + self.key_size()], offset);
+            offset += @sizeOf(usize);
+
+            return offset;
         }
 
         pub fn deinit(self: *Self) void {
@@ -193,17 +222,17 @@ test "record.having an slice, read a record starting at an offset" {
     const RecordType = Record(u32, u64);
     const r = RecordType.read_record(record_bytes[0..], std.testing.allocator).?;
     defer r.deinit();
-    
+
     try expect(std.mem.eql(u8, r.key, "hello"));
     try expect(std.mem.eql(u8, r.value, "world"));
 
-    const key = RecordType.read_key(record_bytes[0..]);
+    const key = RecordType.read_key_and_length(record_bytes[0..]);
     try expect(std.mem.eql(u8, key, "hello"));
 
     // return none if there's not enough data for a record in the buffer
     // starting from 20, there's not enough data to read a potential record size
     const r2 = RecordType.read_record(record_bytes[20..], std.testing.allocator);
-    
+
     try expect(r2 == null);
 
     // return none in case of some corruption where I can read the record

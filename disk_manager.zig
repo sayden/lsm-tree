@@ -5,13 +5,13 @@ const File = std.fs.File;
 const ArrayList = std.ArrayList;
 
 /// Tracks the files that belong to the system.
-fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
+pub fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
     return struct {
         const Self = @This();
         folder_path: []const u8,
 
-        pub fn init(p: []u8) Self {
-            return DiskManager{
+        pub fn init(p: []const u8) Self {
+            return Self{
                 .folder_path = p,
             };
         }
@@ -24,7 +24,7 @@ fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
         ///
         /// TODO build an wrapper to allow using a File like a WriterCloser interface to allow switching
         /// implementations (to transparently do compression, for example).
-        fn new_sst_file(self: *Self, allocator: *std.mem.Allocator) !File {
+        pub fn new_sst_file(self: *Self, allocator: *std.mem.Allocator) !File {
             const file_id: []u8 = try self.get_new_file_id(allocator);
             defer allocator.free(file_id);
 
@@ -65,14 +65,14 @@ fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
             var f = try std.fs.openFileAbsolute(full_path, File.OpenFlags{});
             var all = try f.readToEndAlloc(allocator, 4096);
             defer allocator.free(all);
-            
+
             var list = std.ArrayList(*RecordType).init(allocator);
             var seek_pos: usize = 0;
             while (RecordType.read_record(all[seek_pos..], allocator)) |r| {
                 seek_pos += r.record_size_in_bytes;
                 try list.append(r);
             }
-            
+
             return list;
         }
 
@@ -97,7 +97,7 @@ test "disk_manager.read file" {
     var dm = DiskManager(Wal(100, RecordType), RecordType){ .folder_path = path[0..] };
 
     var list = try dm.read_file("1", std.testing.allocator);
-    while(list.popOrNull())|r|{
+    while (list.popOrNull()) |r| {
         r.deinit();
     }
     defer list.deinit();
@@ -106,7 +106,7 @@ test "disk_manager.read file" {
 fn testWriteWalToDisk(path: []const u8) !void {
     const RecordType = Record(u32, u64);
     const WalType = Wal(100, RecordType);
-    
+
     var alloc = std.testing.allocator;
     var wal = try WalType.init(alloc);
     defer wal.deinit_cascade();
