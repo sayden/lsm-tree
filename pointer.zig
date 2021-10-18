@@ -37,8 +37,8 @@ pub const Pointer = struct {
         return offset;
     }
 
-    pub fn bytesLength(self: *const Self) usize {
-        return Self.key_size + self.key.len + @sizeOf(@TypeOf(self.byte_offset));
+    pub fn bytesLen(self: *const Self) usize {
+        return 1+Self.key_size + self.key.len + @sizeOf(@TypeOf(self.byte_offset));
     }
 };
 
@@ -79,5 +79,5 @@ test "pointer.read" {
 
     try std.testing.expectEqualSlices(u8, "hello", p.key);
 
-    try eq(@as(usize, 15), p.bytesLength());
+    try eq(@as(usize, 15), p.bytesLen());
 }

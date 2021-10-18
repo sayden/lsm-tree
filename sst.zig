@@ -91,12 +91,13 @@ test "sst.persist" {
     var wal = try WalType.init(allocator);
     defer wal.deinit_cascade();
 
-    var r = try Record.init("hell0", "world1", Op.Create, allocator);
+    var r = try Record.init("hell0", "world1", Op.Update, allocator);
     try wal.add_record(r);
-    try wal.add_record(try Record.init("hell1", "world2", Op.Create, allocator));
-    try wal.add_record(try Record.init("hell2", "world3", Op.Create, allocator));
+    try wal.add_record(try Record.init("hell1", "world2", Op.Delete, allocator));
+    try wal.add_record(try Record.init("hell2", "world3", Op.Delete, allocator));
     wal.sort();
-    std.debug.print("\nrecord size: {d}\n", .{r.size()});
+    try std.testing.expectEqual(@as(usize,22), r.len());
+    std.debug.print("\nrecord size: {d}\n", .{r.len()});
 
     std.debug.print("wal size in bytes {d}\n", .{wal.current_size});
     std.debug.print("wal total records {d}\n", .{wal.total_records});
@@ -121,19 +122,19 @@ test "sst.persist" {
     _ = try file.read(&headerBuf);
     defer std.fs.deleteFileAbsolute("/tmp/1.sst") catch unreachable;
 
-    var magic = std.mem.readIntSliceLittle(u32, headerBuf[0..4]);
+    var magic = std.mem.readIntSliceLittle(u8, headerBuf[0..1]);
     std.debug.print("magic number: {d}\n", .{magic});
 
-    var content = std.mem.readIntSliceLittle(usize, headerBuf[4..12]);
+    var content = std.mem.readIntSliceLittle(usize, headerBuf[1..9]);
     std.debug.print("first key in data: {d}\n", .{content});
 
-    content = std.mem.readIntSliceLittle(usize, headerBuf[12..20]);
+    content = std.mem.readIntSliceLittle(usize, headerBuf[9..17]);
     std.debug.print("last key in data: {d}\n", .{content});
 
-    content = std.mem.readIntSliceLittle(usize, headerBuf[20..28]);
+    content = std.mem.readIntSliceLittle(usize, headerBuf[17..25]);
     std.debug.print("beginning of keys: {d}\n", .{content});
 
-    content = std.mem.readIntSliceLittle(usize, headerBuf[28..36]);
+    content = std.mem.readIntSliceLittle(usize, headerBuf[25..33]);
     std.debug.print("total records: {d}\n", .{content});
 
     var i: usize = sst.wal.total_records;
@@ -146,8 +147,8 @@ test "sst.persist" {
     var p: Pointer = undefined;
     while (i > 0) : (i -= 1) {
         p = pointer.readPointer(file_bytes[offset..]);
-        offset += p.bytesLength();
         std.debug.print("key: {s}, offset: {d}\n", .{ p.key, p.byte_offset });
+        offset += p.bytesLen();
     }
 
     //read value of last record
@@ -157,5 +158,5 @@ test "sst.persist" {
     var r1 = Record.read_record(file_bytes[p.byte_offset..], std.testing.allocator).?;
     defer r1.deinit();
 
-    std.debug.print("last pointer value = {s}\n", .{r1.value});
+    std.debug.print("last pointer value = ({d}){s}\n", .{r1.value.len, r1.value});
 }

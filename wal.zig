@@ -34,7 +34,7 @@ pub fn Wal(comptime size_in_bytes: usize) type {
         }
 
         pub fn add_record(self: *Self, r: *Record) WalError!void {
-            const record_size: usize = r.size();
+            const record_size: usize = r.len();
 
             // Check if there's available space in the WAL
             if ((self.current_size + record_size > self.max_size) or (self.total_records >= self.mem.len)) {
@@ -186,7 +186,7 @@ test "wal.add record" {
     try wal.add_record(r);
 
     try std.testing.expect(wal.total_records == 1);
-    try std.testing.expect(wal.current_size == r.size());
+    try std.testing.expect(wal.current_size == r.len());
 }
 
 test "wal.max size reached" {
@@ -198,7 +198,7 @@ test "wal.max size reached" {
     try std.testing.expectEqual(@as(usize, 1), wal.mem.len);
     var r = try Record.init("hello", "world", Op.Create, alloc);
 
-    try std.testing.expectEqual(@as(usize, 21), r.size());
+    try std.testing.expectEqual(@as(usize, 21), r.len());
 
     wal.add_record(r) catch unreachable;
 
@@ -219,7 +219,7 @@ test "wal.find a key" {
     try wal.add_record(r);
 
     try std.testing.expect(wal.total_records == 1);
-    try std.testing.expect(wal.current_size == r.size());
+    try std.testing.expect(wal.current_size == r.len());
 
     const maybe_record = wal.find(r.key[0..]);
     try std.testing.expect(std.mem.eql(u8, maybe_record.?.value, r.value[0..]));

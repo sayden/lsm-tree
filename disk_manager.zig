@@ -1,6 +1,7 @@
 const std = @import("std");
 const Wal = @import("wal.zig").Wal;
 const Record = @import("record.zig").Record;
+const Op = @import("ops.zig").Op;
 const File = std.fs.File;
 const ArrayList = std.ArrayList;
 
@@ -92,7 +93,7 @@ test "disk_manager.read file" {
 
     var path = "/tmp".*;
 
-    var dm = DiskManager(Wal(100, Record), Record){ .folder_path = path[0..] };
+    var dm = DiskManager(Wal(100)){ .folder_path = path[0..] };
 
     var list = try dm.read_file("1", std.testing.allocator);
     while (list.popOrNull()) |r| {
@@ -102,19 +103,19 @@ test "disk_manager.read file" {
 }
 
 fn testWriteWalToDisk(path: []const u8) !void {
-    const WalType = Wal(100, Record);
+    const WalType = Wal(100);
 
     var alloc = std.testing.allocator;
     var wal = try WalType.init(alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record.init("hell0", "world", alloc));
-    try wal.add_record(try Record.init("hell1", "world", alloc));
-    try wal.add_record(try Record.init("hell2", "world", alloc));
+    try wal.add_record(try Record.init("hell", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell1", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell2", "world", Op.Create, alloc));
 
-    var dm = DiskManager(WalType, Record){ .folder_path = path[0..] };
+    var dm = DiskManager(WalType){ .folder_path = path[0..] };
     const total_bytes = try dm.persist_wal(wal);
-    try std.testing.expectEqual(@as(usize, 66), total_bytes);
+    try std.testing.expectEqual(@as(usize, 62), total_bytes);
 }
 
 test "disk_manager.write wal" {

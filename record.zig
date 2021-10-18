@@ -9,14 +9,12 @@ pub const KeyLengthType: type = u16;
 pub const RecordError = error{ BufferTooSmall, KeyTooBig };
 
 /// A record is an array of contiguous bytes in the following form:
-/// 1 byte to store the op type of the record
-/// N bytes to store the total bytes that the record uses, where N = ValueLengthType (u64 by default)
-/// K bytes to store the key length where K = KeyLengthType (u32 by default which uses 4 bytes)
-/// K' bytes to store the key, where K' = key.len
-/// V bytes to store the value, where V = value.len
 ///
-/// For example the key:'hello' and value:'world' uses 23 bytes with u32 max size keys and u64 max size record
-/// 1 + 8 (u64) + 4 (u32) + 5 (bytes of 'hello') + 5 (bytes of 'world')
+/// 1 byte to store the op type of the record
+/// 8 bytes T to store the total bytes that the record uses
+/// 2 bytes L to store the key length
+/// K bytes to store the key, where K = key.len
+/// V bytes to store the value, where V = value.len
 pub const Record = struct {
     op: Op = Op.Create,
 
@@ -47,7 +45,7 @@ pub const Record = struct {
         s.allocator = alloc;
         s.record_size_in_bytes = 0;
 
-        _ = s.size();
+        _ = s.len();
 
         return s;
     }
@@ -59,20 +57,21 @@ pub const Record = struct {
     /// length of the op + key + the key length type
     fn totalKeyLen(self: *const Self) usize {
         // K bytes to store a number that indicates how many bytes the key has
-        const key_length = @sizeOf(u16);
+        const key_length = @sizeOf(KeyLengthType);
         return 1 + key_length + self.key.len;
     }
 
-    pub fn size(self: *Self) usize {
+    /// total size in bytes of the record
+    pub fn len(self: *Self) usize {
         if (self.record_size_in_bytes != 0) {
             return self.record_size_in_bytes;
         }
 
-        // N bytes to store a number that indicates how many bytes the record has
-        const value_len = @sizeOf(RecordLengthType);
+        // total bytes (usually 8 bytes) to store the total bytes in the entire record
+        const record_len_type_len = @sizeOf(RecordLengthType);
 
         // Total
-        self.record_size_in_bytes = value_len + self.totalKeyLen() + self.value.len;
+        self.record_size_in_bytes = record_len_type_len + self.totalKeyLen() + self.value.len;
         return self.record_size_in_bytes;
     }
 
@@ -142,17 +141,20 @@ pub const Record = struct {
         offset += key_length;
 
         // read as many bytes as left to get the value
-        const value = buf[offset..];
+        const value_length = record_length - bytes_for_key_length.len - key_length - @sizeOf(RecordLengthType) - 1;
+        const value = buf[offset .. offset + value_length];
 
         var r = Self.init(key, value, op, allocator) catch return null;
         return r;
     }
 
     pub fn getPointerInBytes(self: *Self, buf: []u8, file_offset: usize) usize {
-        var offset: usize = 0;
+        // op
+        buf[0] = @enumToInt(self.op);
+        var offset: usize = 1;
 
         // key length
-        std.mem.writeIntSliceLittle(u16, buf[0..@sizeOf(u16)], @intCast(u16, self.key.len));
+        std.mem.writeIntSliceLittle(u16, buf[offset .. offset + @sizeOf(u16)], @intCast(u16, self.key.len));
         offset += @sizeOf(u16);
 
         // key
@@ -177,7 +179,7 @@ test "record.size" {
     var r = try Record.init("hello", "world", Op.Create, std.testing.allocator);
     defer r.deinit();
 
-    const size = r.size();
+    const size = r.len();
     try expectEq(@as(u64, 21), size);
 }
 
@@ -189,15 +191,16 @@ test "record.bytes returns a contiguous array with the record" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     var allocator = &arena.allocator;
-    var r = try Record.init("hello", "world", Op.Create, allocator);
+    var r = try Record.init("hello", "world", Op.Delete, allocator);
 
-    var buf = try allocator.alloc(u8, r.size());
+    var buf = try allocator.alloc(u8, r.len());
 
     const total_bytes = try r.bytes(buf);
     try expectEq(@as(usize, 21), total_bytes);
     try std.testing.expectStringEndsWith(buf, "helloworld");
     try expect(!std.mem.eql(u8, buf, "helloworld"));
-    try expectEq(@as(usize, 21), r.size());
+    try expectEq(@as(usize, 21), r.len());
+    try expectEq(buf[0], @enumToInt(Op.Delete));
 }
 
 test "record.having an slice, read a record starting at an offset" {

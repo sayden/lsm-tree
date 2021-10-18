@@ -1,12 +1,12 @@
 const std = @import("std");
 
-/// 8 bytes of magic number
+/// 1 byte of magic number
 /// 8 bytes with the offset of the first key in the "keys" chunk.
 /// 8 bytes with the offset of the last key in the "keys" chunk.
 /// 8 bytes with the offset of the beginning of the "keys" chunk.
 /// 8 bytes of total records
 pub const Header = struct {
-    const magic_number: u32 = 0;
+    const magic_number: u8 = 1;
     //header data
     total_records: usize,
 
@@ -16,6 +16,7 @@ pub const Header = struct {
     pointers_byte_offset: usize,
     first_key_offset: usize,
     last_key_offset: ?usize = null,
+    
 
     pub fn init(comptime T: type, wal: *T) Header {
         //pointers starts after header + all records
