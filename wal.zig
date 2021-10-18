@@ -1,5 +1,6 @@
 const std = @import("std");
 const rec = @import("./record.zig");
+const Op = @import("./ops.zig").Op;
 const Record = rec.Record;
 const RecordError = rec.RecordError;
 const expect = std.testing.expect;
@@ -8,7 +9,7 @@ pub const WalError = error{
     MaxSizeReached,
 } || RecordError || std.mem.Allocator.Error;
 
-pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
+pub fn Wal(comptime size_in_bytes: usize) type {
     return struct {
         const Self = @This();
 
@@ -16,23 +17,23 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
         max_size: usize,
 
         total_records: usize,
-        mem: []*RecordType,
+        mem: []*Record,
 
         allocator: *std.mem.Allocator,
 
         pub fn init(allocator: *std.mem.Allocator) !*Self {
-            var wal = try allocator.create(Wal(size_in_bytes, RecordType));
+            var wal = try allocator.create(Wal(size_in_bytes));
 
             wal.current_size = 0;
             wal.total_records = 0;
             wal.max_size = size_in_bytes;
             wal.allocator = allocator;
-            wal.mem = try allocator.alloc(*RecordType, size_in_bytes / RecordType.minimum_size());
+            wal.mem = try allocator.alloc(*Record, size_in_bytes / Record.minimum_size());
 
             return wal;
         }
 
-        pub fn add_record(self: *Self, r: *RecordType) WalError!void {
+        pub fn add_record(self: *Self, r: *Record) WalError!void {
             const record_size: usize = r.size();
 
             // Check if there's available space in the WAL
@@ -47,7 +48,7 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
 
         // TODO Find returns first ocurrence when it should be returning last ocurrence found which
         // is the most recent
-        pub fn find(self: *Self, key_to_find: []const u8) ?*RecordType {
+        pub fn find(self: *Self, key_to_find: []const u8) ?*Record {
             var iter = self.iterator();
             while (iter.next()) |r| {
                 if (std.mem.eql(u8, r.key, key_to_find)) {
@@ -59,11 +60,11 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
         }
 
         pub fn sort(self: *Self) void {
-            std.sort.sort(*RecordType, self.mem[0..self.total_records], {}, lexicographical_compare);
+            std.sort.sort(*Record, self.mem[0..self.total_records], {}, lexicographical_compare);
         }
 
-        pub fn iterator(self: *Self) RecordTypeIterator {
-            const iter = RecordTypeIterator.init(self.mem[0..self.total_records]);
+        pub fn iterator(self: *Self) RecordIterator {
+            const iter = RecordIterator.init(self.mem[0..self.total_records]);
 
             return iter;
         }
@@ -81,7 +82,7 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
             self.deinit();
         }
 
-        fn lexicographical_compare(_: void, lhs: *RecordType, rhs: *RecordType) bool {
+        fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
             const smaller_size: usize = if (lhs.key.len > rhs.key.len) rhs.key.len else lhs.key.len;
 
             var i: usize = 0;
@@ -100,17 +101,17 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
             return (lhs.key.len < rhs.key.len);
         }
 
-        const RecordTypeIterator = struct {
+        const RecordIterator = struct {
             pos: usize = 0,
-            records: []*RecordType,
+            records: []*Record,
 
-            pub fn init(records: []*RecordType) RecordTypeIterator {
-                return RecordTypeIterator{
+            pub fn init(records: []*Record) RecordIterator {
+                return RecordIterator{
                     .records = records,
                 };
             }
 
-            pub fn next(self: *RecordTypeIterator) ?*RecordType {
+            pub fn next(self: *RecordIterator) ?*Record {
                 if (self.pos == self.records.len) {
                     return null;
                 }
@@ -125,12 +126,12 @@ pub fn Wal(comptime size_in_bytes: usize, comptime RecordType: type) type {
 
 test "wal.iterator" {
     var alloc = std.testing.allocator;
-    var wal = try Wal(100, Record(u32, u64)).init(std.testing.allocator);
+    var wal = try Wal(100).init(std.testing.allocator);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record(u32, u64).init("hell0", "world", alloc));
-    try wal.add_record(try Record(u32, u64).init("hell1", "world", alloc));
-    try wal.add_record(try Record(u32, u64).init("hell2", "world", alloc));
+    try wal.add_record(try Record.init("hell0", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell1", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell2", "world", Op.Create, alloc));
 
     var iter = wal.iterator();
 
@@ -145,23 +146,23 @@ test "wal.iterator" {
 test "wal.lexicographical_compare" {
     var alloc = std.testing.allocator;
 
-    var r1 = try Record(u32, u64).init("hello", "world", alloc);
-    var r2 = try Record(u32, u64).init("hellos", "world", alloc);
+    var r1 = try Record.init("hello", "world", Op.Create, alloc);
+    var r2 = try Record.init("hellos", "world", Op.Create, alloc);
 
     defer r1.deinit();
     defer r2.deinit();
 
-    try std.testing.expect(!Wal(100, Record(u32, u64)).lexicographical_compare({}, r2, r1));
+    try std.testing.expect(!Wal(100).lexicographical_compare({}, r2, r1));
 }
 
 test "wal.sort a wal" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(100, Record(u32, u64)).init(std.testing.allocator);
+    var wal = try Wal(100).init(std.testing.allocator);
     defer wal.deinit_cascade();
 
-    var r1 = try Record(u32, u64).init("hellos", "world", alloc);
-    var r2 = try Record(u32, u64).init("hello", "world", alloc);
+    var r1 = try Record.init("hellos", "world", Op.Create, alloc);
+    var r2 = try Record.init("hello", "world", Op.Create, alloc);
 
     try wal.add_record(r1);
     try wal.add_record(r2);
@@ -178,10 +179,10 @@ test "wal.sort a wal" {
 test "wal.add record" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(100, Record(u32, u64)).init(alloc);
+    var wal = try Wal(100).init(alloc);
     defer wal.deinit_cascade();
 
-    var r = try Record(u32, u64).init("hello", "world", alloc);
+    var r = try Record.init("hello", "world", Op.Create, alloc);
     try wal.add_record(r);
 
     try std.testing.expect(wal.total_records == 1);
@@ -191,13 +192,13 @@ test "wal.add record" {
 test "wal.max size reached" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(23, Record(u32, u64)).init(alloc);
+    var wal = try Wal(23).init(alloc);
     defer wal.deinit_cascade();
 
     try std.testing.expectEqual(@as(usize, 1), wal.mem.len);
-    var r = try Record(u32, u64).init("hello", "world", alloc);
+    var r = try Record.init("hello", "world", Op.Create, alloc);
 
-    try std.testing.expectEqual(@as(usize, 22), r.size());
+    try std.testing.expectEqual(@as(usize, 21), r.size());
 
     wal.add_record(r) catch unreachable;
 
@@ -210,10 +211,10 @@ test "wal.max size reached" {
 }
 
 test "wal.find a key" {
-    var wal = try Wal(100, Record(u32, u64)).init(std.testing.allocator);
+    var wal = try Wal(100).init(std.testing.allocator);
     defer wal.deinit_cascade();
 
-    var r = try Record(u32, u64).init("hello", "world", std.testing.allocator);
+    var r = try Record.init("hello", "world", Op.Create, std.testing.allocator);
 
     try wal.add_record(r);
 

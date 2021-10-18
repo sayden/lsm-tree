@@ -5,7 +5,7 @@ const File = std.fs.File;
 const ArrayList = std.ArrayList;
 
 /// Tracks the files that belong to the system.
-pub fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
+pub fn DiskManager(comptime WalType: type) type {
     return struct {
         const Self = @This();
         folder_path: []const u8,
@@ -58,7 +58,7 @@ pub fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
         }
 
         /// No deallocations are needed.
-        pub fn read_file(self: *Self, filename: []const u8, allocator: *std.mem.Allocator) !ArrayList(*RecordType) {
+        pub fn read_file(self: *Self, filename: []const u8, allocator: *std.mem.Allocator) !ArrayList(*Record) {
             var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
             defer allocator.free(full_path);
 
@@ -66,9 +66,9 @@ pub fn DiskManager(comptime WalType: type, comptime RecordType: type) type {
             var all = try f.readToEndAlloc(allocator, 4096);
             defer allocator.free(all);
 
-            var list = std.ArrayList(*RecordType).init(allocator);
+            var list = std.ArrayList(*Record).init(allocator);
             var seek_pos: usize = 0;
-            while (RecordType.read_record(all[seek_pos..], allocator)) |r| {
+            while (Record.read_record(all[seek_pos..], allocator)) |r| {
                 seek_pos += r.record_size_in_bytes;
                 try list.append(r);
             }
@@ -90,11 +90,9 @@ test "disk_manager.read file" {
     // Remove testing file
     defer _ = std.fs.deleteFileAbsolute("/tmp/1.sst") catch null;
 
-    const RecordType = Record(u32, u64);
-
     var path = "/tmp".*;
 
-    var dm = DiskManager(Wal(100, RecordType), RecordType){ .folder_path = path[0..] };
+    var dm = DiskManager(Wal(100, Record), Record){ .folder_path = path[0..] };
 
     var list = try dm.read_file("1", std.testing.allocator);
     while (list.popOrNull()) |r| {
@@ -104,18 +102,17 @@ test "disk_manager.read file" {
 }
 
 fn testWriteWalToDisk(path: []const u8) !void {
-    const RecordType = Record(u32, u64);
-    const WalType = Wal(100, RecordType);
+    const WalType = Wal(100, Record);
 
     var alloc = std.testing.allocator;
     var wal = try WalType.init(alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record(u32, u64).init("hell0", "world", alloc));
-    try wal.add_record(try Record(u32, u64).init("hell1", "world", alloc));
-    try wal.add_record(try Record(u32, u64).init("hell2", "world", alloc));
+    try wal.add_record(try Record.init("hell0", "world", alloc));
+    try wal.add_record(try Record.init("hell1", "world", alloc));
+    try wal.add_record(try Record.init("hell2", "world", alloc));
 
-    var dm = DiskManager(WalType, RecordType){ .folder_path = path[0..] };
+    var dm = DiskManager(WalType, Record){ .folder_path = path[0..] };
     const total_bytes = try dm.persist_wal(wal);
     try std.testing.expectEqual(@as(usize, 66), total_bytes);
 }
@@ -128,18 +125,16 @@ test "disk_manager.write wal" {
 }
 
 test "disk_manager.get new file id" {
-    const RecordType = Record(u32, u64);
-    const WalType = Wal(100, RecordType);
-    var dm = DiskManager(WalType, RecordType){ .folder_path = "/tmp" };
+    const WalType = Wal(100);
+    var dm = DiskManager(WalType){ .folder_path = "/tmp" };
 
     var f = try dm.get_new_file_id(std.testing.allocator);
     defer std.testing.allocator.free(f);
 }
 
 test "disk_manager.create file" {
-    const RecordType = Record(u32, u64);
-    const WalType = Wal(100, RecordType);
-    var dm = DiskManager(WalType, RecordType){ .folder_path = "/tmp" };
+    const WalType = Wal(100);
+    var dm = DiskManager(WalType){ .folder_path = "/tmp" };
     var f = try dm.new_sst_file(std.testing.allocator);
     defer f.close();
 

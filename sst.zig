@@ -9,6 +9,7 @@ const dm_ns = @import("./disk_manager.zig");
 const DiskManager = dm_ns.DiskManager;
 const header = @import("./header.zig");
 const Header = header.Header;
+const Op = @import("./ops.zig").Op;
 
 /// A SST or Sorted String Table is created from a Wal object. The structure is the following:
 /// 
@@ -85,28 +86,27 @@ pub fn Sst(comptime WalType: type) type {
 
 test "sst.persist" {
     var allocator = std.testing.allocator;
-    const RecordType = Record(u32, u64);
-    const WalType = Wal(512, RecordType);
+    const WalType = Wal(512);
 
     var wal = try WalType.init(allocator);
     defer wal.deinit_cascade();
 
-    var r = try Record(u32, u64).init("hell0", "world1", allocator);
+    var r = try Record.init("hell0", "world1", Op.Create, allocator);
     try wal.add_record(r);
-    try wal.add_record(try Record(u32, u64).init("hell1", "world2", allocator));
-    try wal.add_record(try Record(u32, u64).init("hell2", "world3", allocator));
+    try wal.add_record(try Record.init("hell1", "world2", Op.Create, allocator));
+    try wal.add_record(try Record.init("hell2", "world3", Op.Create, allocator));
     wal.sort();
     std.debug.print("\nrecord size: {d}\n", .{r.size()});
 
     std.debug.print("wal size in bytes {d}\n", .{wal.current_size});
     std.debug.print("wal total records {d}\n", .{wal.total_records});
 
-    var dm = DiskManager(WalType, RecordType).init("/tmp");
+    var dm = DiskManager(WalType).init("/tmp");
     var file = try dm.new_sst_file(allocator);
 
     const SstType = Sst(WalType);
     var sst = SstType.init(wal, &file);
-    std.debug.print("Header length {d}\n",.{header.headerSize()});
+    std.debug.print("Header length {d}\n", .{header.headerSize()});
     const bytes = sst.persist(allocator);
 
     std.debug.print("{d} bytes written into sst file\n", .{bytes});
@@ -143,18 +143,18 @@ test "sst.persist" {
     _ = try file.readAll(&file_bytes);
 
     var offset: usize = 0;
-    var p: Pointer(u32) = undefined;
+    var p: Pointer = undefined;
     while (i > 0) : (i -= 1) {
-        p = pointer.readPointer(u32, file_bytes[offset..]);
+        p = pointer.readPointer(file_bytes[offset..]);
         offset += p.bytesLength();
-        std.debug.print("key: {s}, offset: {d}\n", .{p.key,p.byte_offset});
+        std.debug.print("key: {s}, offset: {d}\n", .{ p.key, p.byte_offset });
     }
 
     //read value of last record
     try file.seekTo(0);
     _ = try file.readAll(file_bytes[0..]);
 
-    var r1 = RecordType.read_record(file_bytes[p.byte_offset..], std.testing.allocator).?;
+    var r1 = Record.read_record(file_bytes[p.byte_offset..], std.testing.allocator).?;
     defer r1.deinit();
 
     std.debug.print("last pointer value = {s}\n", .{r1.value});
