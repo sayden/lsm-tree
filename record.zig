@@ -26,11 +26,7 @@ pub const Record = struct {
 
     const Self = @This();
 
-    pub fn minimum_size() usize {
-        return @sizeOf(KeyLengthType) + @sizeOf(RecordLengthType) + 2;
-    }
-
-    // Call deinit() to deallocate this struct and its values
+    /// Call deinit() to deallocate this struct and its values
     pub fn init(key: []const u8, value: []const u8, op: Op, alloc: *std.mem.Allocator) !*Self {
         var s = try alloc.create(Self);
 
@@ -154,8 +150,8 @@ pub const Record = struct {
         var offset: usize = 1;
 
         // key length
-        std.mem.writeIntSliceLittle(u16, buf[offset .. offset + @sizeOf(u16)], @intCast(u16, self.key.len));
-        offset += @sizeOf(u16);
+        std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @intCast(KeyLengthType, self.key.len));
+        offset += @sizeOf(KeyLengthType);
 
         // key
         std.mem.copy(u8, buf[offset .. offset + self.key.len], self.key);
@@ -163,9 +159,13 @@ pub const Record = struct {
 
         //offset
         std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(file_offset))], file_offset);
-        offset += @sizeOf(usize);
+        offset += @sizeOf(@TypeOf(file_offset));
 
         return offset;
+    }
+
+    pub fn minimum_size() usize {
+        return @sizeOf(KeyLengthType) + @sizeOf(RecordLengthType) + 2;
     }
 
     pub fn deinit(self: *Self) void {
@@ -174,6 +174,19 @@ pub const Record = struct {
         self.allocator.destroy(self);
     }
 };
+
+test "record.init" {
+    var r = try Record.init("hell0", "world1", Op.Update, std.testing.allocator);
+    defer r.deinit();
+
+    try expectEq(@as(usize, 22), r.record_size_in_bytes);
+    try expectEq(@as(usize, 22), r.len());
+    try expectEq(@as(usize, 8), r.totalKeyLen());
+
+    try std.testing.expectEqualStrings("hell0", r.key);
+    try std.testing.expectEqualStrings("world1", r.value);
+    try expectEq(Op.Update, r.op);
+}
 
 test "record.size" {
     var r = try Record.init("hello", "world", Op.Create, std.testing.allocator);
@@ -203,7 +216,7 @@ test "record.bytes returns a contiguous array with the record" {
     try expectEq(buf[0], @enumToInt(Op.Delete));
 }
 
-test "record.having an slice, read a record starting at an offset" {
+test "record.read_record having an slice, read a record starting at an offset" {
     // var offset = 0;
     var record_bytes = [_]u8{
         0, //Op
