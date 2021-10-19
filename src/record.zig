@@ -144,25 +144,25 @@ pub const Record = struct {
         return r;
     }
 
-    pub fn getPointerInBytes(self: *Self, buf: []u8, file_offset: usize) usize {
-        // op
-        buf[0] = @enumToInt(self.op);
-        var offset: usize = 1;
+    // pub fn getPointerInBytes(self: *Self, buf: []u8, file_offset: usize) usize {
+    //     // op
+    //     buf[0] = @enumToInt(self.op);
+    //     var offset: usize = 1;
 
-        // key length
-        std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @intCast(KeyLengthType, self.key.len));
-        offset += @sizeOf(KeyLengthType);
+    //     // key length
+    //     std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @intCast(KeyLengthType, self.key.len));
+    //     offset += @sizeOf(KeyLengthType);
 
-        // key
-        std.mem.copy(u8, buf[offset .. offset + self.key.len], self.key);
-        offset += self.key.len;
+    //     // key
+    //     std.mem.copy(u8, buf[offset .. offset + self.key.len], self.key);
+    //     offset += self.key.len;
 
-        //offset
-        std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(file_offset))], file_offset);
-        offset += @sizeOf(@TypeOf(file_offset));
+    //     //offset
+    //     std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(file_offset))], file_offset);
+    //     offset += @sizeOf(@TypeOf(file_offset));
 
-        return offset;
-    }
+    //     return offset;
+    // }
 
     pub fn minimum_size() usize {
         return @sizeOf(KeyLengthType) + @sizeOf(RecordLengthType) + 2;
