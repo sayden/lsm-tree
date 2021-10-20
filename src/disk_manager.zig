@@ -4,6 +4,7 @@ const Record = @import("record.zig").Record;
 const Op = @import("ops.zig").Op;
 const File = std.fs.File;
 const ArrayList = std.ArrayList;
+const lsmtree = @import("main.zig");
 
 /// Tracks the files that belong to the system.
 pub fn DiskManager(comptime WalType: type) type {
@@ -51,7 +52,7 @@ pub fn DiskManager(comptime WalType: type) type {
             var total_record_bytes: usize = 0;
             var buf: [2048]u8 = undefined;
             while (iter.next()) |record| {
-                total_record_bytes = try record.bytes(&buf);
+                total_record_bytes = try lsmtree.serialize.record.toBytes(record, &buf);
                 written += try f.write(buf[0..total_record_bytes]);
             }
 
@@ -69,7 +70,7 @@ pub fn DiskManager(comptime WalType: type) type {
 
             var list = std.ArrayList(*Record).init(allocator);
             var seek_pos: usize = 0;
-            while (Record.read_record(all[seek_pos..], allocator)) |r| {
+            while (lsmtree.serialize.record.fromBytes(all[seek_pos..], allocator)) |r| {
                 seek_pos += r.record_size_in_bytes;
                 try list.append(r);
             }
