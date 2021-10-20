@@ -1,0 +1,14 @@
+pkgs:
+  lsm-tree:
+    version: 0.0.0
+    root: src/main.zig
+    license: Apache-2.0
+    source_url: "https://github.com/sayden/lsm-tree"
+deps:
+  string:
+    src:
+      github:
+        user: JakubSzark
+        repo: zig-string
+        ref: master
+    root: src/main.zig
