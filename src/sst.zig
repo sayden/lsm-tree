@@ -1,13 +1,14 @@
 const std = @import("std");
-const pointer = @import("./pointer.zig");
-const Pointer = pointer.Pointer;
 const wal_ns = @import("./wal.zig");
-const Wal = wal_ns.Wal;
+const pointer = @import("./pointer.zig");
 const record_ns = @import("./record.zig");
-const Record = record_ns.Record;
 const dm_ns = @import("./disk_manager.zig");
-const DiskManager = dm_ns.DiskManager;
 const header = @import("./header.zig");
+
+const Pointer = pointer.Pointer;
+const Wal = wal_ns.Wal;
+const Record = record_ns.Record;
+const DiskManager = dm_ns.DiskManager;
 const Header = header.Header;
 const Op = @import("./ops.zig").Op;
 
@@ -96,7 +97,7 @@ test "sst.persist" {
     try wal.add_record(try Record.init("hell1", "world2", Op.Delete, allocator));
     try wal.add_record(try Record.init("hell2", "world3", Op.Delete, allocator));
     wal.sort();
-    try std.testing.expectEqual(@as(usize,22), r.len());
+    try std.testing.expectEqual(@as(usize, 22), r.len());
     std.debug.print("\nrecord size: {d}\n", .{r.len()});
 
     std.debug.print("wal size in bytes {d}\n", .{wal.current_size});
@@ -158,5 +159,5 @@ test "sst.persist" {
     var r1 = Record.read_record(file_bytes[p.byte_offset..], std.testing.allocator).?;
     defer r1.deinit();
 
-    std.debug.print("last pointer value = ({d}){s}\n", .{r1.value.len, r1.value});
+    std.debug.print("last pointer value = ({d}){s}\n", .{ r1.value.len, r1.value });
 }
