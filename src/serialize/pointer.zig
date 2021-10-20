@@ -1,23 +1,22 @@
 const std = @import("std");
 
-const record = @import("../record.zig").Record;
-const Record = record.Record;
-const KeyLengthType = record.KeyLengthType;
-const Pointer = @import("main").Pointer;
-const Op = @import("../ops.zig").Op;
+const Record = @import("lsmtree").Record;
+const KeyLengthType = @import("lsmtree").KeyLengthType;
+const Pointer = @import("lsmtree").Pointer;
+const Op = @import("lsmtree").Op;
 
-pub fn fromRecord(p: Record, buf: []u8, file_offset: usize) usize {
+pub fn fromRecord(r: Record, buf: []u8, file_offset: usize) usize {
     // op
-    buf[0] = @enumToInt(p.op);
+    buf[0] = @enumToInt(r.op);
     var offset: usize = 1;
 
     // key length
-    std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @intCast(KeyLengthType, p.key.len));
+    std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @intCast(KeyLengthType, r.key.len));
     offset += @sizeOf(KeyLengthType);
 
     // key
-    std.mem.copy(u8, buf[offset .. offset + p.key.len], p.key);
-    offset += p.key.len;
+    std.mem.copy(u8, buf[offset .. offset + r.key.len], r.key);
+    offset += r.key.len;
 
     //offset
     std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(file_offset))], file_offset);
@@ -88,5 +87,5 @@ test "pointer.read" {
 
     try std.testing.expectEqualSlices(u8, "hello", p.key);
 
-    try eq(@as(usize, 15), p.bytesLen());
+    try eq(@as(usize, 16), p.bytesLen());
 }

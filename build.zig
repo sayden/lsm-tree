@@ -13,12 +13,13 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable("lsm-tree", "src/main.zig");
     exe.addPackagePath("serialize","src/serialize/serialize.zig");
-    exe.addPackagePath("main","src/main.zig");
+    exe.addPackagePath("lsmtree","src/main.zig");
     exe.setTarget(target);
     exe.setBuildMode(mode);
     exe.install();
 
     const run_cmd = exe.run();
+
     run_cmd.step.dependOn(b.getInstallStep());
     if (b.args) |args| {
         run_cmd.addArgs(args);
@@ -26,4 +27,10 @@ pub fn build(b: *std.build.Builder) void {
 
     const run_step = b.step("run", "Run the app");
     run_step.dependOn(&run_cmd.step);
+
+    var main_test = b.addTest("src/test.zig");
+    main_test.addPackagePath("lsmtree", "src/main.zig");
+    main_test.setBuildMode(mode);
+    const test_step = b.step("test", "run library tests");
+    test_step.dependOn(&main_test.step);
 }
