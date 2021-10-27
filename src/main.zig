@@ -7,4 +7,4 @@ pub const Op = @import("./ops.zig").Op;
 pub const KeyLengthType = @import("./record.zig").KeyLengthType;
 pub const RecordLengthType = @import("./record.zig").RecordLengthType;
 
-pub const serialize = @import("./serialize/serialize.zig");
+pub const serialize = @import("./serialize/main.zig");

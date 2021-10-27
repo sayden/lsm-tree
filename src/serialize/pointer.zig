@@ -89,3 +89,25 @@ test "pointer.read" {
 
     try eq(@as(usize, 16), p.bytesLen());
 }
+
+test "pointer.fromRecord"{
+    var r = try Record.init("hello", "world", Op.Delete, std.testing.allocator);
+    defer r.deinit();
+
+    var buf: [20]u8 = undefined;
+    const size = fromRecord(r.*,&buf,99);
+    try std.testing.expectEqual(@as(usize,16),size);
+    try std.testing.expectEqual(@as(u8,5), buf[1]);
+    try std.testing.expectEqual(@as(u8,99), buf[8]);
+    try std.testing.expectEqualStrings("hello", buf[3..8]);
+}
+
+test "pointer.try contains" {
+    const String = @import("zig-string").String;
+
+    var s = String.init(std.testing.allocator);
+    defer s.deinit();
+
+    try s.concat("hello");
+    try s.find("ello");
+}

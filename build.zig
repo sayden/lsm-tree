@@ -31,7 +31,10 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     var main_test = b.addTest("src/test.zig");
+    pkgs.addAllTo(main_test);
     main_test.addPackagePath("lsmtree", "src/main.zig");
+    main_test.addPackagePath("serialize", "src/serialize/main.zig");
+    main_test.addPackage(pkgs.string);
     main_test.setBuildMode(mode);
     const test_step = b.step("test", "run library tests");
     test_step.dependOn(&main_test.step);
