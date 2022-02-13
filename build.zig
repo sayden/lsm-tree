@@ -13,9 +13,7 @@ pub fn build(b: *std.build.Builder) void {
     // between Debug, ReleaseSafe, ReleaseFast, and ReleaseSmall.
     const mode = b.standardReleaseOptions();
 
-    const exe = b.addExecutable("lsm-tree", "src/main.zig");
-    // exe.addPackagePath("serialize", "src/serialize/main.zig");
-    //exe.addPackagePath("lsmtree", "src/main.zig");
+    const exe = b.addExecutable("lsmtree", "src/main.zig");
     const root = Pkg{ .name = "lsmtree", .path = .{ .path = "src/main.zig" } };
     const serialize = Pkg{ .name = "serialize", .path = .{ .path = "src/serialize/main.zig" }, .dependencies = &[_]Pkg{root} };
     exe.addPackage(serialize);
@@ -35,11 +33,8 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     var main_test = b.addTest("src/test.zig");
-    // main_test.addPackagePath("lsmtree", "src/main.zig");
-    // main_test.addPackagePath("serialize", "src/serialize/main.zig");
     main_test.addPackage(serialize);
     main_test.addPackage(root);
-    // main_test.addPackage(pkgs.string);
     main_test.setBuildMode(mode);
     pkgs.addAllTo(main_test);
 
