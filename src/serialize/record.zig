@@ -82,12 +82,12 @@ const expect = std.testing.expect;
 const expectEq = std.testing.expectEqual;
 
 test "record.bytes returns a contiguous array with the record" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const allocator = arena.allocator;
-    var r = try Record.init("hello", "world", Op.Delete, &allocator);
+    var alloc = std.testing.allocator;
+    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    defer r.deinit();
 
-    var buf = try allocator.alloc(u8, r.len());
+    var buf = try alloc.alloc(u8, r.len());
+    defer alloc.free(buf);
 
     const total_bytes = try toBytes(r, buf);
     try expectEq(@as(usize, 21), total_bytes);
@@ -107,7 +107,9 @@ test "record.read_record having an slice, read a record starting at an offset" {
         119, 111, 114, 108, 100, //world (the value)
     };
 
-    const r = lsmtree.serialize.record.fromBytes(record_bytes[0..], std.testing.allocator).?;
+    var alloc = std.testing.allocator;
+
+    const r = lsmtree.serialize.record.fromBytes(record_bytes[0..], &alloc).?;
     defer r.deinit();
 
     try std.testing.expectEqualStrings("hello", r.key);
@@ -115,13 +117,13 @@ test "record.read_record having an slice, read a record starting at an offset" {
 
     // return none if there's not enough data for a record in the buffer
     // starting from 20, there's not enough data to read a potential record size
-    const r2 = lsmtree.serialize.record.fromBytes(record_bytes[20..], std.testing.allocator);
+    const r2 = lsmtree.serialize.record.fromBytes(record_bytes[20..], &alloc);
 
     try expect(r2 == null);
 
     // return none in case of some corruption where I can read the record
     // size but there's not enough data. For example if record size says that
     // the record has 30 bytes but the buffer actually has 10
-    const r3 = lsmtree.serialize.record.fromBytes(record_bytes[0..10], std.testing.allocator);
+    const r3 = lsmtree.serialize.record.fromBytes(record_bytes[0..10], &alloc);
     try expect(r3 == null);
 }

@@ -8,3 +8,5 @@ pub const KeyLengthType = @import("./record.zig").KeyLengthType;
 pub const RecordLengthType = @import("./record.zig").RecordLengthType;
 
 pub const serialize = @import("./serialize/main.zig");
+
+pub fn main() void {}

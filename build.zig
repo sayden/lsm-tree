@@ -1,5 +1,6 @@
 const std = @import("std");
 const pkgs = @import("deps.zig").pkgs;
+const Pkg = std.build.Pkg;
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -13,8 +14,11 @@ pub fn build(b: *std.build.Builder) void {
     const mode = b.standardReleaseOptions();
 
     const exe = b.addExecutable("lsm-tree", "src/main.zig");
-    exe.addPackagePath("serialize", "src/serialize/main.zig");
-    exe.addPackagePath("lsmtree", "src/main.zig");
+    // exe.addPackagePath("serialize", "src/serialize/main.zig");
+    //exe.addPackagePath("lsmtree", "src/main.zig");
+    const root = Pkg{ .name = "lsmtree", .path = .{ .path = "src/main.zig" } };
+    const serialize = Pkg{ .name = "serialize", .path = .{ .path = "src/serialize/main.zig" }, .dependencies = &[_]Pkg{root} };
+    exe.addPackage(serialize);
     exe.setTarget(target);
     exe.setBuildMode(mode);
     pkgs.addAllTo(exe);
@@ -31,11 +35,14 @@ pub fn build(b: *std.build.Builder) void {
     run_step.dependOn(&run_cmd.step);
 
     var main_test = b.addTest("src/test.zig");
-    pkgs.addAllTo(main_test);
-    main_test.addPackagePath("lsmtree", "src/main.zig");
-    main_test.addPackagePath("serialize", "src/serialize/main.zig");
-    main_test.addPackage(pkgs.string);
+    // main_test.addPackagePath("lsmtree", "src/main.zig");
+    // main_test.addPackagePath("serialize", "src/serialize/main.zig");
+    main_test.addPackage(serialize);
+    main_test.addPackage(root);
+    // main_test.addPackage(pkgs.string);
     main_test.setBuildMode(mode);
+    pkgs.addAllTo(main_test);
+
     const test_step = b.step("test", "run library tests");
     test_step.dependOn(&main_test.step);
 }

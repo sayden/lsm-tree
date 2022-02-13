@@ -81,16 +81,17 @@ pub fn DiskManager(comptime WalType: type) type {
 
         /// No deallocations are needed.
         pub fn read_file(self: *Self, filename: []const u8, allocator: *std.mem.Allocator) !ArrayList(*Record) {
-            var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
+            var full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, filename });
             defer allocator.free(full_path);
 
             var f = try std.fs.openFileAbsolute(full_path, File.OpenFlags{});
-            var all = try f.readToEndAlloc(allocator, 4096);
+            var all = try f.readToEndAlloc(allocator.*, 4096);
             defer allocator.free(all);
 
-            var list = std.ArrayList(*Record).init(allocator);
+            var list = std.ArrayList(*Record).init(allocator.*);
             var seek_pos: usize = 0;
-            while (lsmtree.serialize.record.fromBytes(all[seek_pos..], allocator)) |r| {
+            var alloc = allocator;
+            while (lsmtree.serialize.record.fromBytes(all[seek_pos..], alloc)) |r| {
                 seek_pos += r.record_size_in_bytes;
                 try list.append(r);
             }
@@ -120,7 +121,8 @@ test "disk_manager.read file" {
 
     var dm = DiskManager(Wal(100)){ .folder_path = path[0..] };
 
-    var list = try dm.read_file("1", std.testing.allocator);
+    var alloc = std.testing.allocator;
+    var list = try dm.read_file("1", &alloc);
     while (list.popOrNull()) |r| {
         r.deinit();
     }
