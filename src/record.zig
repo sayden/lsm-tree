@@ -83,7 +83,8 @@ pub const Record = struct {
 };
 
 test "record.init" {
-    var r = try Record.init("hell0", "world1", Op.Update, std.testing.allocator);
+    var alloc = std.testing.allocator;
+    var r = try Record.init("hell0", "world1", Op.Update, &alloc);
     defer r.deinit();
 
     try expectEq(@as(usize, 22), r.record_size_in_bytes);
@@ -96,7 +97,8 @@ test "record.init" {
 }
 
 test "record.size" {
-    var r = try Record.init("hello", "world", Op.Create, std.testing.allocator);
+    var alloc = std.testing.allocator;
+    var r = try Record.init("hello", "world", Op.Create, &alloc);
     defer r.deinit();
 
     const size = r.len();

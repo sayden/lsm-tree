@@ -84,8 +84,8 @@ const expectEq = std.testing.expectEqual;
 test "record.bytes returns a contiguous array with the record" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    var allocator = &arena.allocator;
-    var r = try Record.init("hello", "world", Op.Delete, allocator);
+    const allocator = arena.allocator;
+    var r = try Record.init("hello", "world", Op.Delete, &allocator);
 
     var buf = try allocator.alloc(u8, r.len());
 

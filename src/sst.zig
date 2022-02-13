@@ -89,13 +89,13 @@ test "sst.persist" {
     var allocator = std.testing.allocator;
     const WalType = Wal(512);
 
-    var wal = try WalType.init(allocator);
+    var wal = try WalType.init(&allocator);
     defer wal.deinit_cascade();
 
-    var r = try Record.init("hell0", "world1", Op.Update, allocator);
+    var r = try Record.init("hell0", "world1", Op.Update, &allocator);
     try wal.add_record(r);
-    try wal.add_record(try Record.init("hell1", "world2", Op.Delete, allocator));
-    try wal.add_record(try Record.init("hell2", "world3", Op.Delete, allocator));
+    try wal.add_record(try Record.init("hell1", "world2", Op.Delete, &allocator));
+    try wal.add_record(try Record.init("hell2", "world3", Op.Delete, &allocator));
     wal.sort();
     try std.testing.expectEqual(@as(usize, 22), r.len());
     std.debug.print("\nrecord size: {d}\n", .{r.len()});
@@ -104,12 +104,12 @@ test "sst.persist" {
     std.debug.print("wal total records {d}\n", .{wal.total_records});
 
     var dm = DiskManager(WalType).init("/tmp");
-    var file = try dm.new_sst_file(allocator);
+    var file = try dm.new_sst_file(&allocator);
 
     const SstType = Sst(WalType);
     var sst = SstType.init(wal, &file);
     std.debug.print("Header length {d}\n", .{header.headerSize()});
-    const bytes = sst.persist(allocator);
+    const bytes = sst.persist(&allocator);
 
     std.debug.print("{d} bytes written into sst file\n", .{bytes});
 

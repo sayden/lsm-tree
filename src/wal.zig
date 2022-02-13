@@ -127,12 +127,12 @@ pub fn Wal(comptime size_in_bytes: usize) type {
 
 test "wal.iterator" {
     var alloc = std.testing.allocator;
-    var wal = try Wal(100).init(std.testing.allocator);
+    var wal = try Wal(100).init(&alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record.init("hell0", "world", Op.Create, alloc));
-    try wal.add_record(try Record.init("hell1", "world", Op.Create, alloc));
-    try wal.add_record(try Record.init("hell2", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell0", "world", Op.Create, &alloc));
+    try wal.add_record(try Record.init("hell1", "world", Op.Create, &alloc));
+    try wal.add_record(try Record.init("hell2", "world", Op.Create, &alloc));
 
     var iter = wal.iterator();
 
@@ -147,8 +147,8 @@ test "wal.iterator" {
 test "wal.lexicographical_compare" {
     var alloc = std.testing.allocator;
 
-    var r1 = try Record.init("hello", "world", Op.Create, alloc);
-    var r2 = try Record.init("hellos", "world", Op.Create, alloc);
+    var r1 = try Record.init("hello", "world", Op.Create, &alloc);
+    var r2 = try Record.init("hellos", "world", Op.Create, &alloc);
 
     defer r1.deinit();
     defer r2.deinit();
@@ -159,11 +159,11 @@ test "wal.lexicographical_compare" {
 test "wal.sort a wal" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(100).init(std.testing.allocator);
+    var wal = try Wal(100).init(&alloc);
     defer wal.deinit_cascade();
 
-    var r1 = try Record.init("hellos", "world", Op.Create, alloc);
-    var r2 = try Record.init("hello", "world", Op.Create, alloc);
+    var r1 = try Record.init("hellos", "world", Op.Create, &alloc);
+    var r2 = try Record.init("hello", "world", Op.Create, &alloc);
 
     try wal.add_record(r1);
     try wal.add_record(r2);
@@ -180,10 +180,10 @@ test "wal.sort a wal" {
 test "wal.add record" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(100).init(alloc);
+    var wal = try Wal(100).init(&alloc);
     defer wal.deinit_cascade();
 
-    var r = try Record.init("hello", "world", Op.Create, alloc);
+    var r = try Record.init("hello", "world", Op.Create, &alloc);
     try wal.add_record(r);
 
     try std.testing.expect(wal.total_records == 1);
@@ -193,11 +193,11 @@ test "wal.add record" {
 test "wal.max size reached" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(23).init(alloc);
+    var wal = try Wal(23).init(&alloc);
     defer wal.deinit_cascade();
 
     try std.testing.expectEqual(@as(usize, 1), wal.mem.len);
-    var r = try Record.init("hello", "world", Op.Create, alloc);
+    var r = try Record.init("hello", "world", Op.Create, &alloc);
 
     try std.testing.expectEqual(@as(usize, 21), r.len());
 
@@ -212,10 +212,11 @@ test "wal.max size reached" {
 }
 
 test "wal.find a key" {
-    var wal = try Wal(100).init(std.testing.allocator);
+    var alloc = std.testing.allocator;
+    var wal = try Wal(100).init(&alloc);
     defer wal.deinit_cascade();
 
-    var r = try Record.init("hello", "world", Op.Create, std.testing.allocator);
+    var r = try Record.init("hello", "world", Op.Create, &alloc);
 
     try wal.add_record(r);
 

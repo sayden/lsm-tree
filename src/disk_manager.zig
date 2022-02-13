@@ -45,7 +45,7 @@ pub fn DiskManager(comptime WalType: type) type {
         ///
         /// TODO build an wrapper to allow using a File like a WriterCloser interface to allow switching
         /// implementations (to transparently do compression, for example).
-        pub fn new_sst_file(self: *Self, allocator: *std.mem.Allocator) !File {
+        pub fn new_sst_file(self: *Self, allocator: std.mem.Allocator) !File {
             const file_id: []u8 = try self.get_new_file_id(allocator);
             defer allocator.free(file_id);
 
@@ -58,6 +58,7 @@ pub fn DiskManager(comptime WalType: type) type {
 
         /// Writes all the contents of a WAL to disk, requesting a new file to itself
         pub fn persist_wal(self: *Self, wal: *WalType) !usize {
+            //TODO Use a one time allocator somehow
             //Create a new file
             var f = try self.new_sst_file(std.testing.allocator);
             defer f.close();
@@ -98,7 +99,7 @@ pub fn DiskManager(comptime WalType: type) type {
         }
 
         // TODO it must return a unique numeric id for the file being created.
-        fn get_new_file_id(_: *Self, allocator: *std.mem.Allocator) ![]u8 {
+        fn get_new_file_id(_: *Self, allocator: std.mem.Allocator) ![]u8 {
             // var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
             // std.fs.openFileAbsolute();
             var buf = try std.fmt.allocPrint(allocator, "{d}", .{1});
@@ -130,12 +131,12 @@ fn testWriteWalToDisk(path: []const u8) !void {
     const WalType = Wal(100);
 
     var alloc = std.testing.allocator;
-    var wal = try WalType.init(alloc);
+    var wal = try WalType.init(&alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record.init("hell", "world", Op.Create, alloc));
-    try wal.add_record(try Record.init("hell1", "world", Op.Create, alloc));
-    try wal.add_record(try Record.init("hell2", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell", "world", Op.Create, &alloc));
+    try wal.add_record(try Record.init("hell1", "world", Op.Create, &alloc));
+    try wal.add_record(try Record.init("hell2", "world", Op.Create, &alloc));
 
     var dm = DiskManager(WalType){ .folder_path = path[0..] };
     const total_bytes = try dm.persist_wal(wal);
@@ -147,12 +148,12 @@ test "disk_manager.write wal" {
     const WalType = Wal(100);
 
     var alloc = std.testing.allocator;
-    var wal = try WalType.init(alloc);
+    var wal = try WalType.init(&alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record.init("hell", "world", Op.Create, alloc));
-    try wal.add_record(try Record.init("hell1", "world", Op.Create, alloc));
-    try wal.add_record(try Record.init("hell2", "world", Op.Create, alloc));
+    try wal.add_record(try Record.init("hell", "world", Op.Create, &alloc));
+    try wal.add_record(try Record.init("hell1", "world", Op.Create, &alloc));
+    try wal.add_record(try Record.init("hell2", "world", Op.Create, &alloc));
 
     var dm = DiskManager(WalType){ .folder_path = path[0..] };
     const total_bytes = try dm.persist_wal(wal);
