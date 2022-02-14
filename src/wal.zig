@@ -229,3 +229,7 @@ test "wal.find a key" {
     const unkonwn_record = wal.find("unknokwn");
     try std.testing.expect(unkonwn_record == null);
 }
+
+test "wal.size on memory" {
+    try std.testing.expectEqual(48, @sizeOf(Wal(100)));
+}

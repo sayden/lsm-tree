@@ -12,6 +12,7 @@ const OpenFileError = std.is.OpenFileError;
 pub fn DiskManager(comptime WalType: type) type {
     return struct {
         const Self = @This();
+
         folder_path: []const u8,
         id_file: ?File = null,
 
@@ -181,4 +182,8 @@ test "disk_manager.create file" {
 
     // Remove testing file
     defer _ = std.fs.deleteFileAbsolute("/tmp/1.sst") catch null;
+}
+
+test "disk_manager.size on memory" {
+    try std.testing.expectEqual(24, @sizeOf(DiskManager(Wal(100))));
 }
