@@ -16,25 +16,33 @@ pub fn DiskManager(comptime WalType: type) type {
         folder_path: []const u8,
         id_file: ?File = null,
 
-        pub fn init(p: []const u8) !Self {
-            std.log.debug("using folder '{s}'\n", .{p});
-            std.os.mkdir(p) catch |err| {
-                switch (err) {
-                    MakeDirError.PathAlreadyExists => void,
+        pub fn init(folder_path: []const u8) !Self {
+            std.log.debug("using folder '{s}'\n", .{folder_path});
+
+            // Create a folder to store data and continue if the folder already exists so it is opened.
+            std.os.mkdir(folder_path, 600) catch |err| {
+                _ = switch (err) {
+                    MakeDirError.PathAlreadyExists => void, //open the content of the folder,
                     else => return err,
-                }
+                };
             };
 
             //TODO Read contents of folder, return error if unexpected content
             // Find SST ID File by its extension
-            const dir = try std.fs.openDirAbsolute(p);
+            var dir = try std.fs.openDirAbsolute(folder_path, std.fs.Dir.OpenDirOptions{ .iterate = true });
             var iter = dir.iterate();
-            while (iter.next()) |maybe_file| {
-                std.debug.print("Hello {any}", .{maybe_file.?});
+
+            //TODO URGENT fix this
+            while (true) {
+                var next = try iter.next();
+                if (next == null) {
+                    break;
+                }
+                std.debug.print("File found in folder '{s}': {s}\n", .{ folder_path, next.?.name });
             }
 
             return Self{
-                .folder_path = p,
+                .folder_path = folder_path,
             };
         }
 
@@ -46,11 +54,11 @@ pub fn DiskManager(comptime WalType: type) type {
         ///
         /// TODO build an wrapper to allow using a File like a WriterCloser interface to allow switching
         /// implementations (to transparently do compression, for example).
-        pub fn new_sst_file(self: *Self, allocator: std.mem.Allocator) !File {
+        pub fn new_sst_file(self: *Self, allocator: *std.mem.Allocator) !File {
             const file_id: []u8 = try self.get_new_file_id(allocator);
             defer allocator.free(file_id);
 
-            var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, file_id });
+            var full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
             defer allocator.free(full_path);
 
             var f = try std.fs.createFileAbsolute(full_path, File.CreateFlags{ .exclusive = true });
@@ -59,9 +67,10 @@ pub fn DiskManager(comptime WalType: type) type {
 
         /// Writes all the contents of a WAL to disk, requesting a new file to itself
         pub fn persist_wal(self: *Self, wal: *WalType) !usize {
-            //TODO Use a one time allocator somehow
+            //TODO Use a one time allocator somehow in the following line
             //Create a new file
-            var f = try self.new_sst_file(std.testing.allocator);
+            var alloc = std.testing.allocator;
+            var f = try self.new_sst_file(&alloc);
             defer f.close();
 
             //Sort the wal in place
@@ -101,10 +110,10 @@ pub fn DiskManager(comptime WalType: type) type {
         }
 
         // TODO it must return a unique numeric id for the file being created.
-        fn get_new_file_id(_: *Self, allocator: std.mem.Allocator) ![]u8 {
+        fn get_new_file_id(_: *Self, allocator: *std.mem.Allocator) ![]u8 {
             // var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
             // std.fs.openFileAbsolute();
-            var buf = try std.fmt.allocPrint(allocator, "{d}", .{1});
+            var buf = try std.fmt.allocPrint(allocator.*, "{d}", .{1});
 
             return buf;
         }
@@ -123,7 +132,7 @@ test "disk_manager.read file" {
     var dm = DiskManager(Wal(100)){ .folder_path = path[0..] };
 
     var alloc = std.testing.allocator;
-    var list = try dm.read_file("1", &alloc);
+    var list = try dm.read_file("99", &alloc);
     while (list.popOrNull()) |r| {
         r.deinit();
     }
@@ -170,14 +179,16 @@ test "disk_manager.get new file id" {
     const WalType = Wal(100);
     var dm = DiskManager(WalType){ .folder_path = "/tmp" };
 
-    var f = try dm.get_new_file_id(std.testing.allocator);
-    defer std.testing.allocator.free(f);
+    var alloc = std.testing.allocator;
+    var f = try dm.get_new_file_id(&alloc);
+    defer alloc.free(f);
 }
 
 test "disk_manager.create file" {
     const WalType = Wal(100);
     var dm = DiskManager(WalType){ .folder_path = "/tmp" };
-    var f = try dm.new_sst_file(std.testing.allocator);
+    var alloc = std.testing.allocator;
+    var f = try dm.new_sst_file(&alloc);
     defer f.close();
 
     // Remove testing file

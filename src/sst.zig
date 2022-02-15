@@ -5,6 +5,8 @@ const record_ns = @import("./record.zig");
 const dm_ns = @import("./disk_manager.zig");
 const header = @import("./header.zig");
 
+const serialize = @import("serialize");
+
 const Pointer = pointer.Pointer;
 const Wal = wal_ns.Wal;
 const Record = record_ns.Record;
@@ -58,12 +60,13 @@ pub fn Sst(comptime WalType: type) type {
             // Write the data and pointers chunks
             while (iter.next()) |record| {
                 // record
-                total_record_bytes = try record.bytes(buf);
+                // TODO Double check this line and the fix after it: `total_record_bytes = try record.len(buf);`
+                total_record_bytes = record.len();
                 written += try self.file.pwrite(buf[0..total_record_bytes], self.head_offset);
                 self.head_offset += total_record_bytes;
 
                 // pointer
-                total_pointer_bytes = record.getPointerInBytes(buf[0..], self.head_offset - total_record_bytes);
+                total_pointer_bytes = try serialize.record.toBytes(record, buf[0..]);
                 written += try self.file.pwrite(buf[0..total_pointer_bytes], self.tail_offset);
                 self.tail_offset += total_pointer_bytes;
             }
@@ -103,7 +106,7 @@ test "sst.persist" {
     std.debug.print("wal size in bytes {d}\n", .{wal.current_size});
     std.debug.print("wal total records {d}\n", .{wal.total_records});
 
-    var dm = DiskManager(WalType).init("/tmp");
+    var dm = try DiskManager(WalType).init("/tmp");
     var file = try dm.new_sst_file(&allocator);
 
     const SstType = Sst(WalType);
@@ -147,7 +150,7 @@ test "sst.persist" {
     var offset: usize = 0;
     var p: Pointer = undefined;
     while (i > 0) : (i -= 1) {
-        p = pointer.readPointer(file_bytes[offset..]);
+        p = serialize.pointer.fromBytes(file_bytes[offset..]);
         std.debug.print("key: {s}, offset: {d}\n", .{ p.key, p.byte_offset });
         offset += p.bytesLen();
     }
@@ -156,7 +159,7 @@ test "sst.persist" {
     try file.seekTo(0);
     _ = try file.readAll(file_bytes[0..]);
 
-    var r1 = Record.read_record(file_bytes[p.byte_offset..], std.testing.allocator).?;
+    var r1 = serialize.record.fromBytes(file_bytes[p.byte_offset..], &allocator).?;
     defer r1.deinit();
 
     std.debug.print("last pointer value = ({d}){s}\n", .{ r1.value.len, r1.value });
