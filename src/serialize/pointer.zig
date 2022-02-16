@@ -35,6 +35,10 @@ pub fn toBytesAlloc(self: Pointer, file_offset: usize, allocator: *std.mem.Alloc
 pub fn toBytes(self: Pointer, buf: []u8) usize {
     var offset: usize = 0;
 
+    // Op
+    std.mem.writeIntSliceLittle(@TypeOf(self.op), buf[0]);
+    offset += 1;
+
     // key length
     std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + Pointer.key_size], self.key.len);
     offset += Pointer.key_size;
@@ -52,6 +56,7 @@ pub fn toBytes(self: Pointer, buf: []u8) usize {
 
 pub fn fromBytes(bytes: []u8) Pointer {
     //Op
+    std.debug.print("data: '{d}'\n", .{bytes});
     var op = @intToEnum(Op, bytes[0]);
     var offset: usize = 1;
 
@@ -65,6 +70,8 @@ pub fn fromBytes(bytes: []u8) Pointer {
 
     // Offset
     var byte_offset = std.mem.readIntSliceLittle(usize, bytes[offset .. offset + @sizeOf(usize)]);
+
+    std.debug.print("op: '{d}', key length: {d}, key: '{s}', offset: {d}\n", .{ bytes[0], key_length, key, offset });
 
     return Pointer{
         .key = key,

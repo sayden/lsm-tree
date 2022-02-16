@@ -12,6 +12,7 @@ const OpenFileError = std.is.OpenFileError;
 pub fn DiskManager(comptime WalType: type) type {
     return struct {
         const Self = @This();
+        file_id: u8 = 1,
 
         folder_path: []const u8,
         id_file: ?File = null,
@@ -38,7 +39,7 @@ pub fn DiskManager(comptime WalType: type) type {
                 if (next == null) {
                     break;
                 }
-                std.debug.print("File found in folder '{s}': {s}\n", .{ folder_path, next.?.name });
+                // std.debug.print("File found in folder '{s}': {s}\n", .{ folder_path, next.?.name });
             }
 
             return Self{
@@ -110,11 +111,11 @@ pub fn DiskManager(comptime WalType: type) type {
         }
 
         // TODO it must return a unique numeric id for the file being created.
-        fn get_new_file_id(_: *Self, allocator: *std.mem.Allocator) ![]u8 {
+        fn get_new_file_id(self: *Self, allocator: *std.mem.Allocator) ![]u8 {
             // var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
             // std.fs.openFileAbsolute();
-            var buf = try std.fmt.allocPrint(allocator.*, "{d}", .{1});
-
+            var buf = try std.fmt.allocPrint(allocator.*, "{d}", .{self.file_id});
+            self.file_id = self.file_id + 1;
             return buf;
         }
     };
@@ -132,7 +133,7 @@ test "disk_manager.read file" {
     var dm = DiskManager(Wal(100)){ .folder_path = path[0..] };
 
     var alloc = std.testing.allocator;
-    var list = try dm.read_file("99", &alloc);
+    var list = try dm.read_file("1", &alloc);
     while (list.popOrNull()) |r| {
         r.deinit();
     }
@@ -196,5 +197,5 @@ test "disk_manager.create file" {
 }
 
 test "disk_manager.size on memory" {
-    try std.testing.expectEqual(24, @sizeOf(DiskManager(Wal(100))));
+    try std.testing.expectEqual(32, @sizeOf(DiskManager(Wal(100))));
 }

@@ -150,6 +150,7 @@ test "sst.persist" {
     var offset: usize = 0;
     var p: Pointer = undefined;
     while (i > 0) : (i -= 1) {
+        std.debug.print("info: '{s}'\n", .{file_bytes[offset..]});
         p = serialize.pointer.fromBytes(file_bytes[offset..]);
         std.debug.print("key: {s}, offset: {d}\n", .{ p.key, p.byte_offset });
         offset += p.bytesLen();
