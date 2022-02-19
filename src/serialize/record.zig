@@ -5,6 +5,8 @@ const KeyLengthType = @import("lsmtree").KeyLengthType;
 const RecordLengthType = @import("lsmtree").RecordLengthType;
 const Op = @import("lsmtree").Op;
 const lsmtree = @import("lsmtree");
+const expect = std.testing.expect;
+const expectEq = std.testing.expectEqual;
 
 /// TODO Update comment. Writes into the provided buf the data of the record in a contiguous array as described
 /// in fn Record()
@@ -77,9 +79,6 @@ pub fn fromBytes(buf: []u8, allocator: *std.mem.Allocator) ?*Record {
     var r = Record.init(key, value, op, allocator) catch return null;
     return r;
 }
-
-const expect = std.testing.expect;
-const expectEq = std.testing.expectEqual;
 
 test "record.bytes returns a contiguous array with the record" {
     var alloc = std.testing.allocator;

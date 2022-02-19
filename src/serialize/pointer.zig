@@ -5,8 +5,9 @@ const KeyLengthType = @import("lsmtree").KeyLengthType;
 const Pointer = @import("lsmtree").Pointer;
 const Op = @import("lsmtree").Op;
 
-const Error = error{BufferTooSmall};
+const Error = error{ArrayTooSmall};
 
+// Writes into the provided array a Pointer byte array using the provided Record
 pub fn fromRecord(r: Record, buf: []u8, file_offset: usize) usize {
     // op
     buf[0] = @enumToInt(r.op);
@@ -49,7 +50,7 @@ pub fn toBytesAlloc(self: Pointer, allocator: *std.mem.Allocator) ![]u8 {
 // 8 bytes: Offset in the data
 pub fn toBytes(self: Pointer, buf: []u8) Error!usize {
     if (self.bytesLen() < buf.len) {
-        return Error.BufferTooSmall;
+        return Error.ArrayTooSmall;
     }
 
     var offset: usize = 0;
@@ -74,9 +75,17 @@ pub fn toBytes(self: Pointer, buf: []u8) Error!usize {
     return offset;
 }
 
-pub fn fromBytes(bytes: []u8) Pointer {
+// Reads the provided array and return a Pointer from the contents. If the contents of the array
+// are not correct, it will return a corrupted Pointer.
+// The size of this array is expected to be X + 11 being X the key length
+pub fn fromBytes(bytes: []u8) !Pointer {
+    // A minimum size no the array of 12 is expected or the array doesn't have
+    // the minimum information
+    if (bytes.len < 12) {
+        return Error.ArrayTooSmall;
+    }
+
     //Op
-    // std.debug.print("data: '{d}'\n", .{bytes});
     var op = @intToEnum(Op, bytes[0]);
     var offset: usize = 1;
 
@@ -90,8 +99,6 @@ pub fn fromBytes(bytes: []u8) Pointer {
 
     // Offset
     var byte_offset = std.mem.readIntSliceLittle(usize, bytes[offset .. offset + @sizeOf(usize)]);
-
-    // std.debug.print("op: '{d}', key length: {d}, key: '{s}', offset: {d}\n", .{ bytes[0], key_length, key, offset });
 
     return Pointer{
         .key = key,
@@ -108,14 +115,14 @@ test "pointer.fromBytes" {
         100, 0, 0, 0, 0, 0, 0, 0, //offset
     };
 
-    const p = fromBytes(&buf);
+    const p = try fromBytes(&buf);
     const eq = std.testing.expectEqual;
     try eq(@as(usize, 5), p.key.len);
     try eq(@as(usize, 100), p.byte_offset);
 
     try std.testing.expectEqualSlices(u8, "hello", p.key);
 
-    try eq(@as(usize, 16), p.bytesLen());
+    try eq(buf.len, p.bytesLen());
 }
 
 test "pointer.toBytes" {
