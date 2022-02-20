@@ -10,37 +10,45 @@ const expectEq = std.testing.expectEqual;
 
 /// TODO Update comment. Writes into the provided buf the data of the record in a contiguous array as described
 /// in fn Record()
-pub fn toBytes(self: *Record, buf: []u8) RecordError!usize {
+pub fn toBytes(record: *Record, buf: []u8) RecordError!usize {
     var offset: usize = 0;
 
     //Abort early if necessary
-    if (buf.len < self.record_size_in_bytes) {
+    if (buf.len < record.record_size_in_bytes) {
         return RecordError.BufferTooSmall;
     }
 
-    if (self.key.len > std.math.maxInt(KeyLengthType)) {
+    if (record.key.len > std.math.maxInt(KeyLengthType)) {
         return RecordError.KeyTooBig;
     }
-    buf[0] = @enumToInt(self.op);
+    buf[0] = @enumToInt(record.op);
     offset += 1;
 
     // Write N bytes to indicate the total size of the record. N is defined as the number of bytes
     // that a type RecordLengthType can store (8 for u64, 4 for a u32, etc.)
-    std.mem.writeIntSliceLittle(RecordLengthType, buf[offset .. offset + @sizeOf(RecordLengthType)], self.record_size_in_bytes);
+    std.mem.writeIntSliceLittle(RecordLengthType, buf[offset .. offset + @sizeOf(RecordLengthType)], record.record_size_in_bytes);
     offset += @sizeOf(RecordLengthType);
 
     // We can truncate here because we have already checked that the size will fit above
-    const temp = @truncate(u16, self.key.len);
+    const temp = @truncate(u16, record.key.len);
     std.mem.writeIntSliceLittle(u16, buf[offset .. offset + @sizeOf(u16)], temp);
     offset += @sizeOf(u16);
 
     // TODO Write a function that "Reads as stream" (alas Read interface) instead of copying values
-    std.mem.copy(u8, buf[offset .. offset + self.key.len], self.key);
-    offset += self.key.len;
+    std.mem.copy(u8, buf[offset .. offset + record.key.len], record.key);
+    offset += record.key.len;
 
-    std.mem.copy(u8, buf[offset .. offset + self.value.len], self.value);
+    std.mem.copy(u8, buf[offset .. offset + record.value.len], record.value);
 
-    return self.record_size_in_bytes;
+    return record.record_size_in_bytes;
+}
+
+pub fn toBytesAlloc(record: *Record, alloc: *std.mem.Allocator) ![]u8 {
+    var buf = try alloc.alloc(u8, record.len());
+    _ = toBytes(record, buf) catch |err|
+        return err;
+
+    return buf;
 }
 
 pub fn fromBytes(buf: []u8, allocator: *std.mem.Allocator) ?*Record {
@@ -80,7 +88,20 @@ pub fn fromBytes(buf: []u8, allocator: *std.mem.Allocator) ?*Record {
     return r;
 }
 
-test "record.bytes returns a contiguous array with the record" {
+test "record.toBytesAlloc" {
+    var alloc = std.testing.allocator;
+    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    defer r.deinit();
+
+    var buf = try toBytesAlloc(r, &alloc);
+    defer alloc.free(buf);
+    try std.testing.expectStringEndsWith(buf, "helloworld");
+    try expect(!std.mem.eql(u8, buf, "helloworld"));
+    try expectEq(@as(usize, 21), r.len());
+    try expectEq(buf[0], @enumToInt(Op.Delete));
+}
+
+test "record.toBytes returns a contiguous array with the record" {
     var alloc = std.testing.allocator;
     var r = try Record.init("hello", "world", Op.Delete, &alloc);
     defer r.deinit();
