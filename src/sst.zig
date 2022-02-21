@@ -16,7 +16,7 @@ const Op = @import("./ops.zig").Op;
 
 /// A SST or Sorted String Table is created from a Wal object. The structure is the following:
 /// 
-/// HEADER:
+/// HEADER: Check the header.zig file for details
 /// 
 /// DATA CHUNK:
 /// Contiguous array of records

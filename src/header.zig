@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const Error = error{NoLastKeyOffsetFound};
+
 /// 1 byte of magic number
 /// 8 bytes with the offset of the first key in the "keys" chunk.
 /// 8 bytes with the offset of the last key in the "keys" chunk. This actually ocupes 16 bytes in memory because it's an optional
@@ -50,8 +52,6 @@ pub fn toBytes(h: *Header, buf: []u8) !void {
     std.mem.writeIntLittle(usize, buf[magic_number_size + 16 .. magic_number_size + 24], h.pointers_byte_offset);
     std.mem.writeIntLittle(usize, buf[magic_number_size + 24 .. magic_number_size + 32], h.total_records);
 }
-
-const Error = error{NoLastKeyOffsetFound};
 
 test "Header.size" {
     const size = @sizeOf(Header);
