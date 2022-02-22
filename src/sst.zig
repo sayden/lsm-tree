@@ -28,15 +28,12 @@ pub fn Sst(comptime WalType: type) type {
         const Self = @This();
 
         header: Header,
-        head_offset: usize = header.headerSize(),
-        tail_offset: usize,
         file: *std.fs.File,
         wal: *WalType,
 
         pub fn init(w: *WalType, f: *std.fs.File) Self {
             var h = Header.init(WalType, w);
             return Self{
-                .tail_offset = h.pointers_byte_offset,
                 .wal = w,
                 .file = f,
                 .header = h,
@@ -50,30 +47,34 @@ pub fn Sst(comptime WalType: type) type {
             var iter = self.wal.iterator();
 
             var written: usize = 0;
-            var total_record_bytes: usize = 0;
-            var total_pointer_bytes: usize = 0;
 
-            // header finished
             // TODO remove hardcoding on the next line
             var buf = try allocator.alloc(u8, 4096);
             defer allocator.free(buf);
 
+            var head_offset: usize = header.headerSize();
+            var tail_offset: usize = self.wal.current_size;
+            var pointer_total_bytes: usize = 0;
             // Write the data and pointers chunks
             while (iter.next()) |record| {
                 // record
-                // TODO Double check this line and the fix after it: `total_record_bytes = try record.len(buf);`
-                total_record_bytes = record.len();
-                written += try self.file.pwrite(buf[0..total_record_bytes], self.head_offset);
-                self.head_offset += total_record_bytes;
+                var record_total_bytes = try serialize.record.toBytes(record, buf);
+                written += try self.file.pwrite(buf[0..record_total_bytes], head_offset);
+                head_offset += record_total_bytes;
 
                 // pointer
-                total_pointer_bytes = try serialize.record.toBytes(record, buf[0..]);
-                written += try self.file.pwrite(buf[0..total_pointer_bytes], self.tail_offset);
-                self.tail_offset += total_pointer_bytes;
+                var pointer_ = pointer.Pointer{
+                    .op = record.op,
+                    .key = record.key,
+                    .byte_offset = tail_offset,
+                };
+                pointer_total_bytes = try serialize.pointer.toBytes(pointer_, buf);
+                written += try self.file.pwrite(buf[0..pointer_total_bytes], tail_offset);
+                tail_offset += pointer_total_bytes;
             }
 
             // update last unknown data on the header
-            self.header.last_key_offset = self.tail_offset - total_pointer_bytes;
+            self.header.last_key_offset = tail_offset - pointer_total_bytes;
 
             // Write the header
             written += try self.writeHeader();
@@ -101,8 +102,8 @@ test "sst.persist" {
     try wal.add_record(try Record.init("hell1", "world2", Op.Delete, &allocator));
     try wal.add_record(try Record.init("hell2", "world3", Op.Delete, &allocator));
     wal.sort();
-    try std.testing.expectEqual(@as(usize, 22), r.len());
-    std.debug.print("\nrecord size: {d}\n", .{r.len()});
+    try std.testing.expectEqual(@as(usize, 22), r.bytesLen());
+    std.debug.print("\nrecord size: {d}\n", .{r.bytesLen()});
 
     std.debug.print("wal size in bytes {d}\n", .{wal.current_size});
     std.debug.print("wal total records {d}\n", .{wal.total_records});
@@ -127,27 +128,9 @@ test "sst.persist" {
     _ = try file.read(&headerBuf);
     defer std.fs.deleteFileAbsolute("/tmp/1.sst") catch unreachable;
 
-    var i: usize = sst.wal.total_records;
+    // var i: usize = sst.wal.total_records;
 
-    var file_bytes: [512]u8 = undefined;
-    try file.seekTo(sst.header.first_key_offset);
-    _ = try file.readAll(&file_bytes);
-
-    var offset: usize = 0;
-    var p: Pointer = undefined;
-    while (i > 0) : (i -= 1) {
-        std.debug.print("info: '{s}'\n", .{file_bytes[offset..]});
-        p = try serialize.pointer.fromBytes(file_bytes[offset..]);
-        std.debug.print("key: {s}, offset: {d}\n", .{ p.key, p.byte_offset });
-        offset += p.bytesLen();
-    }
-
-    //read value of last record
-    try file.seekTo(0);
-    _ = try file.readAll(file_bytes[0..]);
-
-    var r1 = serialize.record.fromBytes(file_bytes[p.byte_offset..], &allocator).?;
-    defer r1.deinit();
-
-    std.debug.print("last pointer value = ({d}){s}\n", .{ r1.value.len, r1.value });
+    // var file_bytes: [512]u8 = undefined;
+    // try file.seekTo(sst.header.first_key_offset);
+    // _ = try file.readAll(&file_bytes);
 }

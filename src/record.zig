@@ -41,13 +41,17 @@ pub const Record = struct {
         s.allocator = alloc;
         s.record_size_in_bytes = 0;
 
-        _ = s.len();
+        _ = s.bytesLen();
 
         return s;
     }
 
     pub fn init_string(key: []const u8, value: []const u8, alloc: *std.mem.Allocator) !*Self {
         return Record.init(key[0..], value[0..], alloc);
+    }
+
+    pub fn valueSize(self: *Self) usize {
+        return self.value.len;
     }
 
     /// length of the op + key + the key length type
@@ -58,7 +62,7 @@ pub const Record = struct {
     }
 
     /// total size in bytes of the record
-    pub fn len(self: *Self) usize {
+    pub fn bytesLen(self: *Self) usize {
         if (self.record_size_in_bytes != 0) {
             return self.record_size_in_bytes;
         }
@@ -67,7 +71,7 @@ pub const Record = struct {
         const record_len_type_len = @sizeOf(RecordLengthType);
 
         // Total
-        self.record_size_in_bytes = record_len_type_len + self.totalKeyLen() + self.value.len;
+        self.record_size_in_bytes = self.totalKeyLen() + record_len_type_len + self.value.len;
         return self.record_size_in_bytes;
     }
 
@@ -88,7 +92,7 @@ test "record.init" {
     defer r.deinit();
 
     try expectEq(@as(usize, 22), r.record_size_in_bytes);
-    try expectEq(@as(usize, 22), r.len());
+    try expectEq(@as(usize, 22), r.bytesLen());
     try expectEq(@as(usize, 8), r.totalKeyLen());
 
     try std.testing.expectEqualStrings("hell0", r.key);
@@ -101,7 +105,7 @@ test "record.size" {
     var r = try Record.init("hello", "world", Op.Create, &alloc);
     defer r.deinit();
 
-    const size = r.len();
+    const size = r.bytesLen();
     try expectEq(@as(u64, 21), size);
 }
 

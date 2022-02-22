@@ -18,8 +18,8 @@ pub fn toBytes(h: *Header, buf: []u8) !usize {
     std.mem.writeIntSliceLittle(@TypeOf(h.first_key_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.first_key_offset))], h.first_key_offset);
     offset += @sizeOf(@TypeOf(h.first_key_offset));
 
-    std.mem.writeIntSliceLittle(@TypeOf(h.last_key_offset.?), buf[offset .. offset + @sizeOf(@TypeOf(h.last_key_offset.?))], h.last_key_offset.?);
-    offset += @sizeOf(@TypeOf(h.last_key_offset.?));
+    std.mem.writeIntSliceLittle(@TypeOf(h.last_key_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.last_key_offset))], h.last_key_offset);
+    offset += @sizeOf(@TypeOf(h.last_key_offset));
 
     std.mem.writeIntSliceLittle(@TypeOf(h.pointers_byte_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.pointers_byte_offset))], h.pointers_byte_offset);
     offset += @sizeOf(@TypeOf(h.pointers_byte_offset));

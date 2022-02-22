@@ -44,7 +44,7 @@ pub fn toBytes(record: *Record, buf: []u8) RecordError!usize {
 }
 
 pub fn toBytesAlloc(record: *Record, alloc: *std.mem.Allocator) ![]u8 {
-    var buf = try alloc.alloc(u8, record.len());
+    var buf = try alloc.alloc(u8, record.bytesLen());
     _ = toBytes(record, buf) catch |err|
         return err;
 
@@ -97,7 +97,7 @@ test "record.toBytesAlloc" {
     defer alloc.free(buf);
     try std.testing.expectStringEndsWith(buf, "helloworld");
     try expect(!std.mem.eql(u8, buf, "helloworld"));
-    try expectEq(@as(usize, 21), r.len());
+    try expectEq(@as(usize, 21), r.bytesLen());
     try expectEq(buf[0], @enumToInt(Op.Delete));
 }
 
@@ -106,14 +106,14 @@ test "record.toBytes returns a contiguous array with the record" {
     var r = try Record.init("hello", "world", Op.Delete, &alloc);
     defer r.deinit();
 
-    var buf = try alloc.alloc(u8, r.len());
+    var buf = try alloc.alloc(u8, r.bytesLen());
     defer alloc.free(buf);
 
     const total_bytes = try toBytes(r, buf);
     try expectEq(@as(usize, 21), total_bytes);
     try std.testing.expectStringEndsWith(buf, "helloworld");
     try expect(!std.mem.eql(u8, buf, "helloworld"));
-    try expectEq(@as(usize, 21), r.len());
+    try expectEq(@as(usize, 21), r.bytesLen());
     try expectEq(buf[0], @enumToInt(Op.Delete));
 }
 
