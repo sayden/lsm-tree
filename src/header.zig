@@ -9,7 +9,7 @@ const Error = error{NoLastKeyOffsetFound};
 /// 8 bytes of total records
 pub const Header = struct {
     //magic number
-    const magic_number: u8 = 1;
+    magic_number: u8 = 1,
 
     //header data
     total_records: usize,
@@ -36,24 +36,13 @@ pub const Header = struct {
 };
 
 pub fn headerSize() usize {
-    return @sizeOf(@TypeOf(Header.magic_number)) + (@sizeOf(usize) * 4);
-}
-
-pub fn toBytes(h: *Header, buf: []u8) !void {
-    if (h.last_key_offset == null) {
-        return Error.NoLastKeyOffsetFound;
-    }
-
-    const magic_number_size = @sizeOf(@TypeOf(Header.magic_number));
-
-    std.mem.writeIntLittle(@TypeOf(Header.magic_number), buf[0..magic_number_size], Header.magic_number);
-    std.mem.writeIntLittle(usize, buf[magic_number_size .. magic_number_size + 8], h.first_key_offset);
-    std.mem.writeIntLittle(usize, buf[magic_number_size + 8 .. magic_number_size + 16], h.last_key_offset.?);
-    std.mem.writeIntLittle(usize, buf[magic_number_size + 16 .. magic_number_size + 24], h.pointers_byte_offset);
-    std.mem.writeIntLittle(usize, buf[magic_number_size + 24 .. magic_number_size + 32], h.total_records);
+    // magic number + usize*4
+    return @sizeOf(u8) + (@sizeOf(usize) * 4);
 }
 
 test "Header.size" {
     const size = @sizeOf(Header);
-    try std.testing.expectEqual(40, size);
+    try std.testing.expectEqual(48, size);
+
+    try std.testing.expectEqual(@as(usize, 33), headerSize());
 }
