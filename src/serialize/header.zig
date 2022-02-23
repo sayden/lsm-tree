@@ -3,11 +3,11 @@ const std = @import("std");
 const Header = @import("lsmtree").Header;
 const expectEqual = std.testing.expectEqual;
 
-const Error = error{ ArrayTooSmall, NoLastKeyOffsetFound };
+const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
 
 pub fn toBytes(h: *Header, buf: []u8) !usize {
-    if (buf.len != 33) {
-        return Error.ArrayTooSmall;
+    if (buf.len < 33) {
+        return Error.OutputArrayTooSmall;
     }
 
     var offset: usize = 0;
@@ -32,7 +32,7 @@ pub fn toBytes(h: *Header, buf: []u8) !usize {
 
 pub fn fromBytes(buf: []u8) !Header {
     if (buf.len < 12) {
-        return Error.ArrayTooSmall;
+        return Error.InputArrayTooSmall;
     }
 
     //Magic number
@@ -74,7 +74,7 @@ test "header.fromBytes" {
     };
 
     var alloc = std.testing.allocator;
-    var buf = try alloc.alloc(u8, 100);
+    var buf = try alloc.alloc(u8, 512);
     defer alloc.free(buf);
 
     _ = try toBytes(&header, buf);

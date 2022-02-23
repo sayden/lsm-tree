@@ -44,7 +44,7 @@ pub fn Wal(comptime size_in_bytes: usize) type {
             const record_size: usize = r.bytesLen();
 
             // Check if there's available space in the WAL
-            if ((self.current_size + record_size > self.max_size) or (self.total_records >= self.mem.len)) {
+            if ((self.current_size + record_size > size_in_bytes) or (self.total_records >= self.mem.len)) {
                 return WalError.MaxSizeReached;
             }
 

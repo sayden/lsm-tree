@@ -68,6 +68,7 @@ pub fn Sst(comptime WalType: type) type {
                     .key = record.key,
                     .byte_offset = tail_offset,
                 };
+
                 pointer_total_bytes = try serialize.pointer.toBytes(pointer_, buf);
                 written += try self.file.pwrite(buf[0..pointer_total_bytes], tail_offset);
                 tail_offset += pointer_total_bytes;
@@ -92,7 +93,7 @@ pub fn Sst(comptime WalType: type) type {
 
 test "sst.persist" {
     var allocator = std.testing.allocator;
-    const WalType = Wal(512);
+    const WalType = Wal(4098);
 
     var wal = try WalType.init(&allocator);
     defer wal.deinit_cascade();
@@ -114,7 +115,7 @@ test "sst.persist" {
     const SstType = Sst(WalType);
     var sst = SstType.init(wal, &file);
     std.debug.print("Header length {d}\n", .{header.headerSize()});
-    const bytes = sst.persist(&allocator);
+    const bytes = try sst.persist(&allocator);
 
     std.debug.print("{d} bytes written into sst file\n", .{bytes});
 

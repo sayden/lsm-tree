@@ -75,8 +75,11 @@ pub const Record = struct {
         return self.record_size_in_bytes;
     }
 
+    // the minimum size possible for a record:
+    // op + key length type + key 1 byte + value size + value 1 byte
+    //  1 + 8               + 1          + 8          + 1
     pub fn minimum_size() usize {
-        return @sizeOf(KeyLengthType) + @sizeOf(RecordLengthType) + 2;
+        return 1 + @sizeOf(KeyLengthType) + 1 + @sizeOf(RecordLengthType) + 1;
     }
 
     pub fn deinit(self: *Self) void {
@@ -110,5 +113,5 @@ test "record.size" {
 }
 
 test "record.minimum size" {
-    try expectEq(@as(usize, 12), Record.minimum_size());
+    try expectEq(@as(usize, 13), Record.minimum_size());
 }

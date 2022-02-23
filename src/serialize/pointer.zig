@@ -48,29 +48,29 @@ pub fn toBytesAlloc(self: Pointer, allocator: *std.mem.Allocator) ![]u8 {
 // 2 bytes: Key size
 // X bytes: Key
 // 8 bytes: Offset in the data
-pub fn toBytes(self: Pointer, buf: []u8) Error!usize {
-    if (self.bytesLen() < buf.len) {
+pub fn toBytes(pointer: Pointer, buf: []u8) Error!usize {
+    if (pointer.bytesLen() > buf.len) {
         return Error.ArrayTooSmall;
     }
 
     var offset: usize = 0;
 
     // Op
-    buf[0] = @enumToInt(self.op);
-    // std.mem.writeIntSliceLittle(u8, buf[0], @enumToInt(self.op));
+    buf[0] = @enumToInt(pointer.op);
+    // std.mem.writeIntSliceLittle(u8, buf[0], @enumToInt(pointer.op));
     offset += 1;
 
     // key length
-    std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @truncate(KeyLengthType, self.key.len));
+    std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @truncate(KeyLengthType, pointer.key.len));
     offset += @sizeOf(KeyLengthType);
 
     // key
-    std.mem.copy(u8, buf[offset .. offset + self.key.len], self.key);
-    offset += self.key.len;
+    std.mem.copy(u8, buf[offset .. offset + pointer.key.len], pointer.key);
+    offset += pointer.key.len;
 
     //offset
-    std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(self.byte_offset))], self.byte_offset);
-    offset += @sizeOf(@TypeOf(self.byte_offset));
+    std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(pointer.byte_offset))], pointer.byte_offset);
+    offset += @sizeOf(@TypeOf(pointer.byte_offset));
 
     return offset;
 }
