@@ -1,12 +1,13 @@
 const std = @import("std");
 
 const Header = @import("lsmtree").Header;
+const headerSize = @import("lsmtree").headerSize;
 const expectEqual = std.testing.expectEqual;
 
 const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
 
 pub fn toBytes(h: *Header, buf: []u8) !usize {
-    if (buf.len < 33) {
+    if (buf.len < headerSize()) {
         return Error.OutputArrayTooSmall;
     }
 
@@ -21,8 +22,8 @@ pub fn toBytes(h: *Header, buf: []u8) !usize {
     std.mem.writeIntSliceLittle(@TypeOf(h.last_key_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.last_key_offset))], h.last_key_offset);
     offset += @sizeOf(@TypeOf(h.last_key_offset));
 
-    std.mem.writeIntSliceLittle(@TypeOf(h.pointers_byte_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.pointers_byte_offset))], h.pointers_byte_offset);
-    offset += @sizeOf(@TypeOf(h.pointers_byte_offset));
+    std.mem.writeIntSliceLittle(@TypeOf(h.reserved), buf[offset .. offset + @sizeOf(@TypeOf(h.reserved))], h.reserved);
+    offset += @sizeOf(@TypeOf(h.reserved));
 
     std.mem.writeIntSliceLittle(@TypeOf(h.total_records), buf[offset .. offset + @sizeOf(@TypeOf(h.total_records))], h.total_records);
     offset += @sizeOf(@TypeOf(h.total_records));
@@ -31,7 +32,7 @@ pub fn toBytes(h: *Header, buf: []u8) !usize {
 }
 
 pub fn fromBytes(buf: []u8) !Header {
-    if (buf.len < 12) {
+    if (buf.len < headerSize()) {
         return Error.InputArrayTooSmall;
     }
 
@@ -47,8 +48,8 @@ pub fn fromBytes(buf: []u8) !Header {
     var last_key = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
     offset += @sizeOf(usize);
 
-    // offset of the beginning of the "keys" chunk.
-    var keys_offset = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
+    // offset of the reserved space
+    var reserved = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
     offset += @sizeOf(usize);
 
     // total records
@@ -56,7 +57,7 @@ pub fn fromBytes(buf: []u8) !Header {
 
     var header = Header{
         .total_records = total_records,
-        .pointers_byte_offset = keys_offset,
+        .reserved = reserved,
         .last_key_offset = last_key,
         .first_key_offset = first_key,
         .magic_number = magic,
@@ -68,7 +69,6 @@ pub fn fromBytes(buf: []u8) !Header {
 test "header.fromBytes" {
     var header = Header{
         .total_records = 10,
-        .pointers_byte_offset = 32,
         .last_key_offset = 48,
         .first_key_offset = 40,
     };
@@ -83,7 +83,7 @@ test "header.fromBytes" {
     try expectEqual(new_h.magic_number, header.magic_number);
     try expectEqual(header.total_records, 10);
     try expectEqual(new_h.total_records, header.total_records);
-    try expectEqual(new_h.pointers_byte_offset, header.pointers_byte_offset);
+    try expectEqual(new_h.reserved, header.reserved);
     try expectEqual(new_h.last_key_offset, header.last_key_offset);
     try expectEqual(new_h.first_key_offset, header.first_key_offset);
 }
@@ -91,7 +91,6 @@ test "header.fromBytes" {
 test "header.toBytes" {
     var header = Header{
         .total_records = 10,
-        .pointers_byte_offset = 32,
         .last_key_offset = 48,
         .first_key_offset = 40,
     };
@@ -112,8 +111,8 @@ test "header.toBytes" {
     // last key
     try expectEqual(@as(u8, 48), buf[9]);
 
-    // beginning of the keys chunk
-    try expectEqual(@as(u8, 32), buf[17]);
+    // reserved data
+    try expectEqual(@as(u8, 0), buf[17]);
 
     // total records
     try expectEqual(@as(u8, 10), buf[25]);

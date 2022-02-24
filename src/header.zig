@@ -15,20 +15,17 @@ pub const Header = struct {
     total_records: usize,
 
     //keys offsets
-    pointers_byte_offset: usize,
+    reserved: usize = 0,
     first_key_offset: usize,
     last_key_offset: usize,
 
     pub fn init(comptime T: type, wal: *T) Header {
         //pointers starts after header + all records
-        const pointer_byte_offset = headerSize() + wal.current_size;
-
-        //first key starts atm exactly where pointers start so...
-        const first_key_offset = pointer_byte_offset;
+        const first_key_offset = headerSize() + wal.current_size;
 
         // last key cannot be computed yet
         return Header{
-            .pointers_byte_offset = pointer_byte_offset,
+            .reserved = 0,
             .first_key_offset = first_key_offset,
             .total_records = wal.total_records,
             .last_key_offset = 0,
@@ -44,6 +41,5 @@ pub fn headerSize() usize {
 test "Header.size" {
     const size = @sizeOf(Header);
     try std.testing.expectEqual(40, size);
-
     try std.testing.expectEqual(@as(usize, 33), headerSize());
 }
