@@ -20,7 +20,7 @@ The header contains critical information about the contents of the file. The dat
 The header contains information critical to use the file effectively. 
 
  __________________________________________________________________________________________
-| 1 byte       | 8 bytes          | 8 bytes         | 8 bytes              | 8 bytes       | Total 33 bytes
+| 1 byte       | 8 bytes          | 8 bytes         | 128 bytes            | 8 bytes       | Total 33 bytes
 |              |                  |                 |                      |               |
 | Magic number | First key offset | Last key offset | Reserved Space       | Total records |
 |______________|__________________|_________________|______________________|_______________|

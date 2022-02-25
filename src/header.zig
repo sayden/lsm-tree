@@ -15,7 +15,7 @@ pub const Header = struct {
     total_records: usize,
 
     //keys offsets
-    reserved: usize = 0,
+    reserved: [128]u8 = undefined,
     first_key_offset: usize,
     last_key_offset: usize,
 
@@ -25,7 +25,7 @@ pub const Header = struct {
 
         // last key cannot be computed yet
         return Header{
-            .reserved = 0,
+            .reserved = undefined,
             .first_key_offset = first_key_offset,
             .total_records = wal.total_records,
             .last_key_offset = 0,
@@ -34,12 +34,12 @@ pub const Header = struct {
 };
 
 pub fn headerSize() usize {
-    // magic number + usize*4
-    return @sizeOf(u8) + (@sizeOf(usize) * 4);
+    // magic number + usize*3 + 128 for the reserved space
+    return @sizeOf(u8) + 128 + (@sizeOf(usize) * 3);
 }
 
 test "Header.size" {
     const size = @sizeOf(Header);
-    try std.testing.expectEqual(40, size);
-    try std.testing.expectEqual(@as(usize, 33), headerSize());
+    try std.testing.expectEqual(160, size);
+    try std.testing.expectEqual(@as(usize, 153), headerSize());
 }

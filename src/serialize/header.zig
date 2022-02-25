@@ -22,7 +22,7 @@ pub fn toBytes(h: *Header, buf: []u8) !usize {
     std.mem.writeIntSliceLittle(@TypeOf(h.last_key_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.last_key_offset))], h.last_key_offset);
     offset += @sizeOf(@TypeOf(h.last_key_offset));
 
-    std.mem.writeIntSliceLittle(@TypeOf(h.reserved), buf[offset .. offset + @sizeOf(@TypeOf(h.reserved))], h.reserved);
+    std.mem.copy(u8, buf[offset .. offset + @sizeOf(@TypeOf(h.reserved))], h.reserved[0..]);
     offset += @sizeOf(@TypeOf(h.reserved));
 
     std.mem.writeIntSliceLittle(@TypeOf(h.total_records), buf[offset .. offset + @sizeOf(@TypeOf(h.total_records))], h.total_records);
@@ -48,20 +48,22 @@ pub fn fromBytes(buf: []u8) !Header {
     var last_key = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
     offset += @sizeOf(usize);
 
-    // offset of the reserved space
-    var reserved = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
-    offset += @sizeOf(usize);
-
-    // total records
-    var total_records = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
-
     var header = Header{
-        .total_records = total_records,
-        .reserved = reserved,
+        .total_records = 0,
+        .reserved = undefined,
         .last_key_offset = last_key,
         .first_key_offset = first_key,
         .magic_number = magic,
     };
+
+    // reserved space
+    std.mem.copy(u8, header.reserved[0..], buf[offset .. offset + @sizeOf(@TypeOf(header.reserved))]);
+    offset += @sizeOf(@TypeOf(header.reserved));
+
+    // total records
+    var total_records = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
+
+    header.total_records = total_records;
 
     return header;
 }
@@ -96,11 +98,11 @@ test "header.toBytes" {
     };
 
     var alloc = std.testing.allocator;
-    var buf = try alloc.alloc(u8, 100);
+    var buf = try alloc.alloc(u8, 512);
     defer alloc.free(buf);
 
     var total_bytes = try toBytes(&header, buf);
-    try expectEqual(@as(usize, 33), total_bytes);
+    try expectEqual(@as(usize, 153), total_bytes);
 
     // magic number
     try expectEqual(@as(u8, 1), buf[0]);
@@ -115,5 +117,5 @@ test "header.toBytes" {
     try expectEqual(@as(u8, 0), buf[17]);
 
     // total records
-    try expectEqual(@as(u8, 10), buf[25]);
+    try expectEqual(@as(u8, 10), buf[145]);
 }
