@@ -118,6 +118,13 @@ pub fn DiskManager(comptime WalType: type) type {
             self.file_id = self.file_id + 1;
             return buf;
         }
+
+        // TODO Return a list of the SST  files in the folder.
+        fn get_files(self: *Self) !void {
+            // Read every file from self.folder_path
+            // Discard all unknown files
+            // Return the array of files
+        }
     };
 }
 
