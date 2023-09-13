@@ -4,7 +4,8 @@ const Op = @import("./ops.zig").Op;
 const Record = rec.Record;
 const RecordError = rec.RecordError;
 const expect = std.testing.expect;
-const lsmtree = @import("main.zig");
+const lsmtree = @import("./main.zig");
+const record_serializer = @import("./record_serializer.zig");
 
 pub const WalError = error{
     MaxSizeReached,
@@ -265,7 +266,7 @@ test "wal.max size reached" {
     wal.add_record(r) catch unreachable;
 
     var buf: [24]u8 = undefined;
-    _ = try lsmtree.serialize.record.toBytes(r, buf[0..]);
+    _ = try record_serializer.toBytes(r, buf[0..]);
 
     if (wal.add_record(r)) |_| unreachable else |err| {
         try std.testing.expect(err == WalError.MaxSizeReached);

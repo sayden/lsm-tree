@@ -1,10 +1,10 @@
 const std = @import("std");
-const Record = @import("lsmtree").Record;
-const RecordError = @import("lsmtree").RecordError;
-const KeyLengthType = @import("lsmtree").KeyLengthType;
-const RecordLengthType = @import("lsmtree").RecordLengthType;
-const Op = @import("lsmtree").Op;
-const lsmtree = @import("lsmtree");
+const Record = @import("./record.zig").Record;
+const RecordError = @import("./record.zig").RecordError;
+const KeyLengthType = @import("./record.zig").KeyLengthType;
+const RecordLengthType = @import("./record.zig").RecordLengthType;
+const Op = @import("./ops.zig").Op;
+const lsmtree = @import("./record.zig");
 const expect = std.testing.expect;
 const expectEq = std.testing.expectEqual;
 
@@ -129,7 +129,7 @@ test "record.read_record having an slice, read a record starting at an offset" {
 
     var alloc = std.testing.allocator;
 
-    const r = lsmtree.serialize.record.fromBytes(record_bytes[0..], &alloc).?;
+    const r = fromBytes(record_bytes[0..], &alloc).?;
     defer r.deinit();
 
     try std.testing.expectEqualStrings("hello", r.key);
@@ -137,13 +137,13 @@ test "record.read_record having an slice, read a record starting at an offset" {
 
     // return none if there's not enough data for a record in the buffer
     // starting from 20, there's not enough data to read a potential record size
-    const r2 = lsmtree.serialize.record.fromBytes(record_bytes[20..], &alloc);
+    const r2 = fromBytes(record_bytes[20..], &alloc);
 
     try expect(r2 == null);
 
     // return none in case of some corruption where I can read the record
     // size but there's not enough data. For example if record size says that
     // the record has 30 bytes but the buffer actually has 10
-    const r3 = lsmtree.serialize.record.fromBytes(record_bytes[0..10], &alloc);
+    const r3 = fromBytes(record_bytes[0..10], &alloc);
     try expect(r3 == null);
 }

@@ -7,6 +7,7 @@ const ArrayList = std.ArrayList;
 const lsmtree = @import("main.zig");
 const MakeDirError = std.os.MakeDirError;
 const OpenFileError = std.is.OpenFileError;
+const record_serializer = @import("./record_serializer.zig");
 
 /// Tracks the files that belong to the system.
 pub fn DiskManager(comptime WalType: type) type {
@@ -30,7 +31,7 @@ pub fn DiskManager(comptime WalType: type) type {
 
             //TODO Read contents of folder, return error if unexpected content
             // Find SST ID File by its extension
-            var dir = try std.fs.openDirAbsolute(folder_path, std.fs.Dir.OpenDirOptions{ .iterate = true });
+            var dir = try std.fs.openIterableDirAbsolute(folder_path, std.fs.Dir.OpenDirOptions{});
             var iter = dir.iterate();
 
             //TODO URGENT fix this
@@ -83,7 +84,7 @@ pub fn DiskManager(comptime WalType: type) type {
             var total_record_bytes: usize = 0;
             var buf: [2048]u8 = undefined;
             while (iter.next()) |record| {
-                total_record_bytes = try lsmtree.serialize.record.toBytes(record, &buf);
+                total_record_bytes = try record_serializer.toBytes(record, &buf);
                 written += try f.write(buf[0..total_record_bytes]);
             }
 
@@ -102,7 +103,7 @@ pub fn DiskManager(comptime WalType: type) type {
             var list = std.ArrayList(*Record).init(allocator.*);
             var seek_pos: usize = 0;
             var alloc = allocator;
-            while (lsmtree.serialize.record.fromBytes(all[seek_pos..], alloc)) |r| {
+            while (record_serializer.fromBytes(all[seek_pos..], alloc)) |r| {
                 seek_pos += r.record_size_in_bytes;
                 try list.append(r);
             }
@@ -120,7 +121,7 @@ pub fn DiskManager(comptime WalType: type) type {
         }
 
         // TODO Return a list of the SST  files in the folder.
-        fn get_files(self: *Self) !void {
+        fn get_files(_: *Self) !void {
             // Read every file from self.folder_path
             // Discard all unknown files
             // Return the array of files

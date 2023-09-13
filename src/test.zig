@@ -5,5 +5,5 @@ comptime {
     _ = @import("record.zig");
     _ = @import("sst.zig");
     _ = @import("wal.zig");
-    _ = @import("serialize/test.zig");
+    _ = @import("test_serializer.zig");
 }

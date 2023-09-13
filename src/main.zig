@@ -9,6 +9,4 @@ pub const Header = @import("./header.zig").Header;
 pub const headerSize = @import("./header.zig").headerSize;
 pub const RecordLengthType = @import("./record.zig").RecordLengthType;
 
-pub const serialize = @import("./serialize/main.zig");
-
 pub fn main() void {}

@@ -5,7 +5,9 @@ const record_ns = @import("./record.zig");
 const dm_ns = @import("./disk_manager.zig");
 const header = @import("./header.zig");
 
-const serialize = @import("serialize");
+const record_serializer = @import("./record_serializer.zig");
+const pointer_serializer = @import("./pointer_serializer.zig");
+const header_serializer = @import("./header_serializer.zig");
 
 const Pointer = pointer.Pointer;
 const Wal = wal_ns.Wal;
@@ -58,7 +60,7 @@ pub fn Sst(comptime WalType: type) type {
             // Write the data and pointers chunks
             while (iter.next()) |record| {
                 // record
-                var record_total_bytes = try serialize.record.toBytes(record, buf);
+                var record_total_bytes = try record_serializer.toBytes(record, buf);
                 written += try self.file.pwrite(buf[0..record_total_bytes], head_offset);
                 head_offset += record_total_bytes;
 
@@ -69,7 +71,7 @@ pub fn Sst(comptime WalType: type) type {
                     .byte_offset = tail_offset,
                 };
 
-                pointer_total_bytes = try serialize.pointer.toBytes(pointer_, buf);
+                pointer_total_bytes = try pointer_serializer.toBytes(pointer_, buf);
                 written += try self.file.pwrite(buf[0..pointer_total_bytes], tail_offset);
                 tail_offset += pointer_total_bytes;
             }
@@ -85,7 +87,7 @@ pub fn Sst(comptime WalType: type) type {
 
         fn writeHeader(self: *Self) !usize {
             var header_buf: [header.headerSize()]u8 = undefined;
-            _ = try serialize.header.toBytes(&self.header, &header_buf);
+            _ = try header_serializer.toBytes(&self.header, &header_buf);
             return try self.file.pwrite(&header_buf, 0);
         }
     };

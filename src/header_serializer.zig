@@ -1,7 +1,7 @@
 const std = @import("std");
 
-const Header = @import("lsmtree").Header;
-const headerSize = @import("lsmtree").headerSize;
+const Header = @import("./header.zig").Header;
+const headerSize = @import("./header.zig").headerSize;
 const expectEqual = std.testing.expectEqual;
 
 const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
