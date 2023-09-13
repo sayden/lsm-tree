@@ -5,8 +5,6 @@ const record_ns = @import("./record.zig");
 const dm_ns = @import("./disk_manager.zig");
 const header = @import("./header.zig");
 
-const record_serializer = @import("./record_serializer.zig");
-const pointer_serializer = @import("./pointer_serializer.zig");
 const header_serializer = @import("./header_serializer.zig");
 
 const Pointer = pointer.Pointer;
@@ -17,12 +15,12 @@ const Header = header.Header;
 const Op = @import("./ops.zig").Op;
 
 /// A SST or Sorted String Table is created from a Wal object. The structure is the following:
-/// 
+///
 /// HEADER: Check the header.zig file for details
-/// 
+///
 /// DATA CHUNK:
 /// Contiguous array of records
-/// 
+///
 /// KEYS CHUNK
 /// Contiguous array of keys only with pointers to values in the data chunk
 pub fn Sst(comptime WalType: type) type {
@@ -60,7 +58,7 @@ pub fn Sst(comptime WalType: type) type {
             // Write the data and pointers chunks
             while (iter.next()) |record| {
                 // record
-                var record_total_bytes = try record_serializer.toBytes(record, buf);
+                var record_total_bytes = try Record.toBytes(record, buf);
                 written += try self.file.pwrite(buf[0..record_total_bytes], head_offset);
                 head_offset += record_total_bytes;
 
@@ -71,7 +69,7 @@ pub fn Sst(comptime WalType: type) type {
                     .byte_offset = tail_offset,
                 };
 
-                pointer_total_bytes = try pointer_serializer.toBytes(pointer_, buf);
+                pointer_total_bytes = try Pointer.toBytes(pointer_, buf);
                 written += try self.file.pwrite(buf[0..pointer_total_bytes], tail_offset);
                 tail_offset += pointer_total_bytes;
             }

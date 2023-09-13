@@ -7,7 +7,6 @@ const ArrayList = std.ArrayList;
 const lsmtree = @import("main.zig");
 const MakeDirError = std.os.MakeDirError;
 const OpenFileError = std.is.OpenFileError;
-const record_serializer = @import("./record_serializer.zig");
 
 /// Tracks the files that belong to the system.
 pub fn DiskManager(comptime WalType: type) type {
@@ -52,7 +51,7 @@ pub fn DiskManager(comptime WalType: type) type {
         ///
         /// Callers must close the file when they are done with it. Unfortunately
         /// there's not "WriterCloser" to return a writer than can be closed so the
-        /// concrete File implementation must be returned. 
+        /// concrete File implementation must be returned.
         ///
         /// TODO build an wrapper to allow using a File like a WriterCloser interface to allow switching
         /// implementations (to transparently do compression, for example).
@@ -84,7 +83,7 @@ pub fn DiskManager(comptime WalType: type) type {
             var total_record_bytes: usize = 0;
             var buf: [2048]u8 = undefined;
             while (iter.next()) |record| {
-                total_record_bytes = try record_serializer.toBytes(record, &buf);
+                total_record_bytes = try Record.toBytes(record, &buf);
                 written += try f.write(buf[0..total_record_bytes]);
             }
 
@@ -103,7 +102,7 @@ pub fn DiskManager(comptime WalType: type) type {
             var list = std.ArrayList(*Record).init(allocator.*);
             var seek_pos: usize = 0;
             var alloc = allocator;
-            while (record_serializer.fromBytes(all[seek_pos..], alloc)) |r| {
+            while (Record.fromBytes(all[seek_pos..], alloc)) |r| {
                 seek_pos += r.record_size_in_bytes;
                 try list.append(r);
             }

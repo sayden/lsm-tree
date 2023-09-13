@@ -5,7 +5,6 @@ const Record = rec.Record;
 const RecordError = rec.RecordError;
 const expect = std.testing.expect;
 const lsmtree = @import("./main.zig");
-const record_serializer = @import("./record_serializer.zig");
 
 pub const WalError = error{
     MaxSizeReached,
@@ -69,7 +68,7 @@ pub fn Wal(comptime size_in_bytes: usize) type {
 
         // Sort the list of records in lexicographical order
         pub fn sort(self: *Self) void {
-            std.sort.sort(*Record, self.mem[0..self.total_records], {}, lexicographical_compare);
+            std.sort.insertion(*Record, self.mem[0..self.total_records], {}, lexicographical_compare);
         }
 
         // Creates a forward iterator to go through the wal.
@@ -266,7 +265,7 @@ test "wal.max size reached" {
     wal.add_record(r) catch unreachable;
 
     var buf: [24]u8 = undefined;
-    _ = try record_serializer.toBytes(r, buf[0..]);
+    _ = try Record.toBytes(r, buf[0..]);
 
     if (wal.add_record(r)) |_| unreachable else |err| {
         try std.testing.expect(err == WalError.MaxSizeReached);
