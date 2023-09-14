@@ -190,7 +190,7 @@ test "pointer.fromBytes" {
 }
 
 test "pointer.try contains" {
-    const String = @import("./strings/strings.zig").String;
+    const String = @import("./pkg/strings/strings.zig").String;
     var alloc = std.testing.allocator;
     var s = String.init(alloc);
     defer s.deinit();

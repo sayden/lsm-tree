@@ -8,6 +8,7 @@ const lsmtree = @import("./main.zig");
 
 pub const WalError = error{
     MaxSizeReached,
+    CantCreateRecord,
 } || RecordError || std.mem.Allocator.Error;
 
 pub fn Wal(comptime size_in_bytes: usize) type {
@@ -39,8 +40,13 @@ pub fn Wal(comptime size_in_bytes: usize) type {
             return wal;
         }
 
+        pub fn appendKv(self: *Self, k: []const u8, v: []const u8) WalError!void {
+            var r = try Record.init(k, v, Op.Create, self.allocator);
+            try self.append(r);
+        }
+
         // Add a new record in order to the in memory WAL
-        pub fn add_record(self: *Self, r: *Record) WalError!void {
+        pub fn append(self: *Self, r: *Record) WalError!void {
             const record_size: usize = r.bytesLen();
 
             // Check if there's available space in the WAL
@@ -53,7 +59,7 @@ pub fn Wal(comptime size_in_bytes: usize) type {
             self.current_size += record_size;
         }
 
-        // Compare the provided keys with the ones in memory and
+        // Compare the provided key with the ones in memory and
         // returns the last record that is found (or none if none is found)
         pub fn find(self: *Self, key_to_find: []const u8) ?*Record {
             var iter = self.backwards_iterator();
@@ -175,10 +181,10 @@ test "wal.iterator backwards" {
     var wal = try Wal(100).init(&alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record.init("hell0", "world", Op.Create, &alloc));
-    try wal.add_record(try Record.init("hell1", "world", Op.Create, &alloc));
-    try wal.add_record(try Record.init("hell2", "world", Op.Create, &alloc));
-    try wal.add_record(try Record.init("hell0", "world0", Op.Create, &alloc));
+    try wal.append(try Record.init("hell0", "world", Op.Create, &alloc));
+    try wal.append(try Record.init("hell1", "world", Op.Create, &alloc));
+    try wal.append(try Record.init("hell2", "world", Op.Create, &alloc));
+    try wal.append(try Record.init("hell0", "world0", Op.Create, &alloc));
 
     var iter = wal.backwards_iterator();
 
@@ -191,10 +197,10 @@ test "wal.iterator" {
     var wal = try Wal(100).init(&alloc);
     defer wal.deinit_cascade();
 
-    try wal.add_record(try Record.init("hell0", "world", Op.Create, &alloc));
-    try wal.add_record(try Record.init("hell1", "world", Op.Create, &alloc));
-    try wal.add_record(try Record.init("hell2", "world", Op.Create, &alloc));
-    try wal.add_record(try Record.init("hell0", "world0", Op.Create, &alloc));
+    try wal.append(try Record.init("hell0", "world", Op.Create, &alloc));
+    try wal.append(try Record.init("hell1", "world", Op.Create, &alloc));
+    try wal.append(try Record.init("hell2", "world", Op.Create, &alloc));
+    try wal.append(try Record.init("hell0", "world0", Op.Create, &alloc));
 
     var iter = wal.iterator();
 
@@ -226,8 +232,8 @@ test "wal.sort a wal" {
     var r1 = try Record.init("hellos", "world", Op.Create, &alloc);
     var r2 = try Record.init("hello", "world", Op.Create, &alloc);
 
-    try wal.add_record(r1);
-    try wal.add_record(r2);
+    try wal.append(r1);
+    try wal.append(r2);
 
     try std.testing.expectEqualSlices(u8, wal.mem[0].key, r1.key);
     try std.testing.expectEqualSlices(u8, wal.mem[1].key, r2.key);
@@ -245,10 +251,13 @@ test "wal.add record" {
     defer wal.deinit_cascade();
 
     var r = try Record.init("hello", "world", Op.Create, &alloc);
-    try wal.add_record(r);
+    try wal.append(r);
 
     try std.testing.expect(wal.total_records == 1);
     try std.testing.expect(wal.current_size == r.bytesLen());
+
+    try wal.appendKv("hello2", "world2");
+    try std.testing.expect(wal.total_records == 2);
 }
 
 test "wal.max size reached" {
@@ -262,12 +271,12 @@ test "wal.max size reached" {
 
     try std.testing.expectEqual(@as(usize, 21), r.bytesLen());
 
-    wal.add_record(r) catch unreachable;
+    wal.append(r) catch unreachable;
 
     var buf: [24]u8 = undefined;
     _ = try Record.toBytes(r, buf[0..]);
 
-    if (wal.add_record(r)) |_| unreachable else |err| {
+    if (wal.append(r)) |_| unreachable else |err| {
         try std.testing.expect(err == WalError.MaxSizeReached);
     }
 }
@@ -282,10 +291,10 @@ test "wal.find a key" {
     var r3 = try Record.init("hello", "world3", Op.Create, &alloc);
     var r4 = try Record.init("hello1", "world", Op.Create, &alloc);
 
-    try wal.add_record(r1);
-    try wal.add_record(r2);
-    try wal.add_record(r3);
-    try wal.add_record(r4);
+    try wal.append(r1);
+    try wal.append(r2);
+    try wal.append(r3);
+    try wal.append(r4);
 
     try std.testing.expect(wal.total_records == 4);
 

@@ -5,8 +5,6 @@ const record_ns = @import("./record.zig");
 const dm_ns = @import("./disk_manager.zig");
 const header = @import("./header.zig");
 
-const header_serializer = @import("./header_serializer.zig");
-
 const Pointer = pointer.Pointer;
 const Wal = wal_ns.Wal;
 const Record = record_ns.Record;
@@ -85,7 +83,7 @@ pub fn Sst(comptime WalType: type) type {
 
         fn writeHeader(self: *Self) !usize {
             var header_buf: [header.headerSize()]u8 = undefined;
-            _ = try header_serializer.toBytes(&self.header, &header_buf);
+            _ = try Header.toBytes(&self.header, &header_buf);
             return try self.file.pwrite(&header_buf, 0);
         }
     };
@@ -99,9 +97,9 @@ test "sst.persist" {
     defer wal.deinit_cascade();
 
     var r = try Record.init("hell0", "world1", Op.Update, &allocator);
-    try wal.add_record(r);
-    try wal.add_record(try Record.init("hell1", "world2", Op.Delete, &allocator));
-    try wal.add_record(try Record.init("hell2", "world3", Op.Delete, &allocator));
+    try wal.append(r);
+    try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
+    try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
     wal.sort();
     try std.testing.expectEqual(@as(usize, 22), r.bytesLen());
     std.debug.print("\nrecord size: {d}\n", .{r.bytesLen()});
@@ -110,7 +108,7 @@ test "sst.persist" {
     std.debug.print("wal total records {d}\n", .{wal.total_records});
 
     var dm = try DiskManager(WalType).init("/tmp");
-    var file = try dm.new_sst_file(&allocator);
+    var file = try dm.new_file(&allocator);
 
     const SstType = Sst(WalType);
     var sst = SstType.init(wal, &file);
