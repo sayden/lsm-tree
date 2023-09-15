@@ -4,16 +4,22 @@ const Op = @import("./ops.zig").Op;
 const Record = rec.Record;
 const RecordError = rec.RecordError;
 const expect = std.testing.expect;
+const HeaderPkg = @import("./header.zig");
+const Header = HeaderPkg.Header;
 const lsmtree = @import("./main.zig");
+const Pointer = @import("./pointer.zig").Pointer;
+const DiskManager = @import("./disk_manager.zig").DiskManager;
 
 pub const WalError = error{
     MaxSizeReached,
     CantCreateRecord,
 } || RecordError || std.mem.Allocator.Error;
 
-pub fn Wal(comptime size_in_bytes: usize) type {
+pub fn MemoryWal(comptime size_in_bytes: usize) type {
     return struct {
         const Self = @This();
+
+        header: Header,
 
         current_size: usize,
         max_size: usize,
@@ -29,7 +35,7 @@ pub fn Wal(comptime size_in_bytes: usize) type {
         // CALL `deinitCascade()` if you want also to free all the records
         // stored in it.
         pub fn init(allocator: *std.mem.Allocator) !*Self {
-            var wal = try allocator.create(Wal(size_in_bytes));
+            var wal = try allocator.create(MemoryWal(size_in_bytes));
 
             wal.current_size = 0;
             wal.total_records = 0;
@@ -106,6 +112,58 @@ pub fn Wal(comptime size_in_bytes: usize) type {
             self.deinit();
         }
 
+        /// writes into provided file the contents of the sst. Including pointers
+        /// and the header. The allocator is required as a temporary buffer for
+        /// data but it's freed inside the function
+        pub fn persist(self: *Self, allocator: *std.mem.Allocator, file: *std.fs.File) !usize {
+            var iter = self.iterator();
+
+            var written: usize = 0;
+
+            // TODO remove hardcoding on the next line
+            var buf = try allocator.alloc(u8, 4096);
+            defer allocator.free(buf);
+
+            var head_offset: usize = HeaderPkg.headerSize();
+            var tail_offset: usize = self.current_size;
+            var pointer_total_bytes: usize = 0;
+            // Write the data and pointers chunks
+            while (iter.next()) |record| {
+                // record
+                var record_total_bytes = try Record.toBytes(record, buf);
+                written += try file.pwrite(buf[0..record_total_bytes], head_offset);
+                head_offset += record_total_bytes;
+
+                // pointer
+                var pointer_ = Pointer{
+                    .op = record.op,
+                    .key = record.key,
+                    .byte_offset = tail_offset,
+                };
+
+                pointer_total_bytes = try Pointer.toBytes(pointer_, buf);
+                written += try file.pwrite(buf[0..pointer_total_bytes], tail_offset);
+                tail_offset += pointer_total_bytes;
+            }
+
+            // update last unknown data on the header
+            self.header.last_key_offset = tail_offset - pointer_total_bytes;
+
+            // Write the header
+            written += try self.writeHeader(file);
+
+            try file.sync();
+            file.close();
+
+            return written;
+        }
+
+        fn writeHeader(self: *Self, file: *std.fs.File) !usize {
+            var header_buf: [HeaderPkg.headerSize()]u8 = undefined;
+            _ = try Header.toBytes(&self.header, &header_buf);
+            return try file.pwrite(&header_buf, 0);
+        }
+
         fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
             const smaller_size: usize = if (lhs.key.len > rhs.key.len) rhs.key.len else lhs.key.len;
 
@@ -178,7 +236,7 @@ pub fn Wal(comptime size_in_bytes: usize) type {
 
 test "wal.iterator backwards" {
     var alloc = std.testing.allocator;
-    var wal = try Wal(100).init(&alloc);
+    var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit_cascade();
 
     try wal.append(try Record.init("hell0", "world", Op.Create, &alloc));
@@ -194,7 +252,7 @@ test "wal.iterator backwards" {
 
 test "wal.iterator" {
     var alloc = std.testing.allocator;
-    var wal = try Wal(100).init(&alloc);
+    var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit_cascade();
 
     try wal.append(try Record.init("hell0", "world", Op.Create, &alloc));
@@ -220,13 +278,13 @@ test "wal.lexicographical_compare" {
     defer r1.deinit();
     defer r2.deinit();
 
-    try std.testing.expect(!Wal(100).lexicographical_compare({}, r2, r1));
+    try std.testing.expect(!MemoryWal(100).lexicographical_compare({}, r2, r1));
 }
 
 test "wal.sort a wal" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(100).init(&alloc);
+    var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit_cascade();
 
     var r1 = try Record.init("hellos", "world", Op.Create, &alloc);
@@ -247,7 +305,7 @@ test "wal.sort a wal" {
 test "wal.add record" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(100).init(&alloc);
+    var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit_cascade();
 
     var r = try Record.init("hello", "world", Op.Create, &alloc);
@@ -263,7 +321,7 @@ test "wal.add record" {
 test "wal.max size reached" {
     var alloc = std.testing.allocator;
 
-    var wal = try Wal(23).init(&alloc);
+    var wal = try MemoryWal(23).init(&alloc);
     defer wal.deinit_cascade();
 
     try std.testing.expectEqual(@as(usize, 1), wal.mem.len);
@@ -283,7 +341,7 @@ test "wal.max size reached" {
 
 test "wal.find a key" {
     var alloc = std.testing.allocator;
-    var wal = try Wal(100).init(&alloc);
+    var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit_cascade();
 
     var r1 = try Record.init("hello", "world", Op.Create, &alloc);
@@ -307,5 +365,43 @@ test "wal.find a key" {
 }
 
 test "wal.size on memory" {
-    try std.testing.expectEqual(48, @sizeOf(Wal(100)));
+    try std.testing.expectEqual(208, @sizeOf(MemoryWal(100)));
+}
+
+test "wal.persist" {
+    var allocator = std.testing.allocator;
+    const WalType = MemoryWal(4098);
+
+    var wal = try WalType.init(&allocator);
+    defer wal.deinit_cascade();
+
+    var r = try Record.init("hell0", "world1", Op.Update, &allocator);
+    try wal.append(r);
+    try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
+    try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
+    wal.sort();
+
+    try std.testing.expectEqual(@as(usize, 22), r.bytesLen());
+    std.debug.print("\nrecord size: {d}\n", .{r.bytesLen()});
+
+    std.debug.print("wal size in bytes {d}\n", .{wal.current_size});
+    std.debug.print("wal total records {d}\n", .{wal.total_records});
+
+    const DiskManagerType = DiskManager(WalType);
+    var dm = try DiskManagerType.init("/tmp");
+    var fileData = try dm.new_file(&allocator);
+
+    std.debug.print("Header length {d}\n", .{HeaderPkg.headerSize()});
+    const bytes = try wal.persist(&allocator, &fileData.file);
+
+    std.debug.print("{d} bytes written into sst file {s}\n", .{ bytes, fileData.filename });
+    defer allocator.free(fileData.filename);
+
+    std.debug.print("Opening {s}\n", .{fileData.filename});
+    const file = try std.fs.openFileAbsolute(fileData.filename, std.fs.File.OpenFlags{});
+    defer file.close();
+
+    var headerBuf: [HeaderPkg.headerSize()]u8 = undefined;
+    _ = try file.read(&headerBuf);
+    defer std.fs.deleteFileAbsolute(fileData.filename) catch unreachable;
 }

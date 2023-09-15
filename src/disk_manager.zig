@@ -1,5 +1,5 @@
 const std = @import("std");
-const Wal = @import("wal.zig").Wal;
+const Wal = @import("memory_wal.zig").MemoryWal;
 const Record = @import("record.zig").Record;
 const Op = @import("ops.zig").Op;
 const File = std.fs.File;
@@ -9,8 +9,20 @@ const MakeDirError = std.os.MakeDirError;
 const OpenFileError = std.is.OpenFileError;
 const RndGen = std.rand.DefaultPrng;
 
+const FileData = struct {
+    file: std.fs.File,
+    filename: []const u8,
+    alloc: *std.mem.Allocator,
+
+    pub fn deinit(self: *FileData) void {
+        self.file.close();
+        self.alloc.free(self.filename);
+    }
+};
+
 /// Tracks the files that belong to the system.
 pub fn DiskManager(comptime WalType: type) type {
+    _ = WalType;
     return struct {
         const Self = @This();
 
@@ -52,42 +64,48 @@ pub fn DiskManager(comptime WalType: type) type {
         /// Callers must close the file when they are done with it. Unfortunately
         /// there's not "WriterCloser" to return a writer than can be closed so the
         /// concrete File implementation must be returned.
-        ///
-        /// TODO build an wrapper to allow using a File like a WriterCloser interface to allow switching
-        /// implementations (to transparently do compression, for example).
-        pub fn new_file(self: *Self, allocator: *std.mem.Allocator) !File {
-            const file_id: []u8 = try self.get_new_file_id(allocator);
-            defer allocator.free(file_id);
+        pub fn new_file(self: *Self, allocator: *std.mem.Allocator) !FileData {
+            var totalAttempts: usize = 0;
+            var file_id: []u8 = try self.get_new_file_id(allocator);
+            var full_path: []u8 = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
 
-            var full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
-            defer allocator.free(full_path);
+            while (true) {
+                _ = std.fs.openFileAbsolute(full_path, std.fs.File.OpenFlags{}) catch |err| {
+                    switch (err) {
+                        std.fs.File.OpenError.FileNotFound => {
+                            allocator.free(file_id);
+                            break;
+                        },
+                        else => {
+                            std.debug.print("File {s} already exists, retrying\n", .{full_path});
 
-            var f = try std.fs.createFileAbsolute(full_path, File.CreateFlags{ .exclusive = true });
-            return f;
-        }
+                            if (totalAttempts > 100) {
+                                allocator.free(file_id);
+                                allocator.free(full_path);
+                                return err;
+                            }
 
-        /// Writes all the contents of a WAL to disk, requesting a new file to itself
-        pub fn persist_wal(self: *Self, wal: *WalType) !usize {
-            //TODO Use a one time allocator somehow in the following line
-            //Create a new file
-            var alloc = std.testing.allocator;
-            var f = try self.new_file(&alloc);
-            defer f.close();
+                            totalAttempts += 1;
 
-            //Sort the wal in place
-            wal.sort();
+                            allocator.free(file_id);
+                            file_id = try self.get_new_file_id(allocator);
 
-            //Iterate
-            var iter = wal.iterator();
-            var written: usize = 0;
-            var total_record_bytes: usize = 0;
-            var buf: [2048]u8 = undefined;
-            while (iter.next()) |record| {
-                total_record_bytes = try Record.toBytes(record, &buf);
-                written += try f.write(buf[0..total_record_bytes]);
+                            allocator.free(full_path);
+                            full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
+                            continue;
+                        },
+                    }
+                };
             }
 
-            return written;
+            std.debug.print("Creating file {s}\n", .{full_path});
+
+            var f = try std.fs.createFileAbsolute(full_path, File.CreateFlags{ .exclusive = true });
+            return FileData{
+                .file = f,
+                .filename = full_path,
+                .alloc = allocator,
+            };
         }
 
         /// No deallocations are needed.
@@ -110,7 +128,7 @@ pub fn DiskManager(comptime WalType: type) type {
             return list;
         }
 
-        // TODO it must return a unique numeric id for the file being created.
+        // It must return a unique numeric id for the file being created. Caller is owner of array response
         fn get_new_file_id(self: *Self, allocator: *std.mem.Allocator) ![]u8 {
             _ = self;
             // var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
@@ -127,102 +145,37 @@ pub fn DiskManager(comptime WalType: type) type {
         }
 
         // TODO Return a list of the SST files in the folder.
-        fn get_files(_: *Self) !void {
+        fn get_files(_: *Self, alloc: *std.mem.Allocator) ![]std.fs.IterableDir.Entry {
             // Read every file from self.folder_path
-            // Discard all unknown files
-            // Return the array of files
+            var dirIterator = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
+
+            var iterator = dirIterator.iterate();
+            var index: usize = 0;
+
+            while (try iterator.next()) |item| {
+                if (std.mem.eql(u8, item.name[item.name.len - 4 .. item.name.len], ".sst")) {
+                    index += 1;
+                }
+            }
+            dirIterator.close();
+
+            var kinds = try alloc.alloc(std.fs.IterableDir.Entry, index);
+
+            // Restart the operation
+            dirIterator = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
+            defer dirIterator.close();
+
+            iterator = dirIterator.iterate();
+            index = 0;
+
+            while (try iterator.next()) |item| {
+                if (std.mem.eql(u8, item.name[item.name.len - 4 .. item.name.len], ".sst")) {
+                    kinds[index] = item;
+                    index += 1;
+                }
+            }
+
+            return kinds;
         }
     };
 }
-
-test "disk_manager.create or open SST ID file" {
-    const WalType = Wal(100);
-
-    var alloc = std.testing.allocator;
-    var wal = try WalType.init(&alloc);
-    defer wal.deinit_cascade();
-
-    var path = "/tmp".*;
-    var dm = DiskManager(Wal(100)){ .folder_path = path[0..] };
-    var id = try dm.get_new_file_id(&alloc);
-    defer alloc.free(id);
-
-    std.debug.print("Hello World! {s}\n", .{id});
-}
-
-test "disk_manager.read file" {
-    try testWriteWalToDisk("/tmp");
-    // Remove testing file
-    defer _ = std.fs.deleteFileAbsolute("/tmp/1.sst") catch null;
-
-    var path = "/tmp".*;
-
-    var dm = DiskManager(Wal(100)){ .folder_path = path[0..] };
-
-    var alloc = std.testing.allocator;
-    var list = try dm.read_file("1", &alloc);
-    while (list.popOrNull()) |r| {
-        r.deinit();
-    }
-    defer list.deinit();
-}
-
-fn testWriteWalToDisk(path: []const u8) !void {
-    const WalType = Wal(100);
-
-    var alloc = std.testing.allocator;
-    var wal = try WalType.init(&alloc);
-    defer wal.deinit_cascade();
-
-    try wal.append(try Record.init("hell", "world", Op.Create, &alloc));
-    try wal.append(try Record.init("hell1", "world", Op.Create, &alloc));
-    try wal.append(try Record.init("hell2", "world", Op.Create, &alloc));
-
-    var dm = DiskManager(WalType){ .folder_path = path[0..] };
-    const total_bytes = try dm.persist_wal(wal);
-    try std.testing.expectEqual(@as(usize, 62), total_bytes);
-}
-
-// test "disk_manager.write wal" {
-//     const path = "/tmp";
-//     const WalType = Wal(100);
-
-//     var alloc = std.testing.allocator;
-//     var wal = try WalType.init(&alloc);
-//     defer wal.deinit_cascade();
-
-//     try wal.add_record(try Record.init("hell", "world", Op.Create, &alloc));
-//     try wal.add_record(try Record.init("hell1", "world", Op.Create, &alloc));
-//     try wal.add_record(try Record.init("hell2", "world", Op.Create, &alloc));
-
-//     var dm = DiskManager(WalType){ .folder_path = path[0..] };
-//     const total_bytes = try dm.persist_wal(wal);
-//     try std.testing.expectEqual(@as(usize, 62), total_bytes);
-
-//     // Remove testing file
-//     _ = std.fs.deleteFileAbsolute("/tmp/1.sst") catch null;
-// }
-
-// test "disk_manager.get new file id" {
-//     const WalType = Wal(100);
-//     var dm = DiskManager(WalType){ .folder_path = "/tmp" };
-
-//     var alloc = std.testing.allocator;
-//     var f = try dm.get_new_file_id(&alloc);
-//     defer alloc.free(f);
-// }
-
-// test "disk_manager.create file" {
-//     const WalType = Wal(100);
-//     var dm = DiskManager(WalType){ .folder_path = "/tmp" };
-//     var alloc = std.testing.allocator;
-//     var f = try dm.new_file(&alloc);
-//     defer f.close();
-
-//     // Remove testing file
-//     defer _ = std.fs.deleteFileAbsolute("/tmp/1.sst") catch null;
-// }
-
-// test "disk_manager.size on memory" {
-//     try std.testing.expectEqual(32, @sizeOf(DiskManager(Wal(100))));
-// }

@@ -4,5 +4,5 @@ comptime {
     _ = @import("pointer.zig");
     _ = @import("record.zig");
     _ = @import("sst.zig");
-    _ = @import("wal.zig");
+    _ = @import("memory_wal.zig");
 }
