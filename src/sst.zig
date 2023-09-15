@@ -28,18 +28,42 @@ pub fn Sst(comptime WalType: type) type {
         header: Header,
         file: *std.fs.File,
         wal: *WalType,
-        first_pointer: *Pointer,
-        last_pointer: *Pointer,
+        // first_pointer: *Pointer,
+        // last_pointer: *Pointer,
 
-        pub fn init(w: *WalType, f: *std.fs.File) Self {
-            // Read the file
+        pub fn init(f: *std.fs.File, allocator: *std.mem.Allocator) !Self {
+            var stat = try f.stat();
 
-            var h = Header.init(WalType, w);
+            var data = try allocator.alloc(u8, stat.size);
+            defer allocator.free(data); //delete
+
+            const bytes_read = try f.readAll(data);
+            _ = bytes_read;
+
+            const h = try Header.fromBytes(data);
+            var wal = try WalType.init(allocator);
+            defer wal.deinit(); //delete
             return Self{
-                .wal = w,
+                .wal = wal,
                 .file = f,
                 .header = h,
             };
         }
+
+        pub fn mytest(path: []const u8) !void {
+            var f = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
+            defer f.close();
+            var stat = try f.stat();
+            std.debug.print("Size: {}\n", .{stat.size});
+        }
     };
+}
+
+test "sdfasdf" {
+    var allocator = std.testing.allocator;
+    var f = try std.fs.openFileAbsolute("/tmp/hello", std.fs.File.OpenFlags{});
+    defer f.close();
+
+    const WalType = Wal(100);
+    _ = try Sst(WalType).init(&f, &allocator);
 }
