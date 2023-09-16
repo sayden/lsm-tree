@@ -8,28 +8,27 @@ const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFou
 /// 8 bytes with the offset of the last key in the "keys" chunk. This actually ocupes 16 bytes in memory because it's an optional
 /// 8 bytes with the offset of the beginning of the "keys" chunk.
 /// 8 bytes of total records
+/// 8 bytes of total records size
 pub const Header = struct {
     //magic number
     magic_number: u8 = 1,
 
     //header data
-    total_records: usize,
+    total_records: usize = 0,
 
     //keys offsets
     reserved: [128]u8 = undefined,
-    first_key_offset: usize,
-    last_key_offset: usize,
+    first_pointer_offset: usize,
+    last_pointer_offset: usize,
+    records_size: usize,
 
-    pub fn init(comptime T: type, wal: *T) Header {
-        //pointers starts after header + all records
-        const first_key_offset = headerSize() + wal.current_size;
-
+    pub fn init() Header {
         // last key cannot be computed yet
         return Header{
             .reserved = undefined,
-            .first_key_offset = first_key_offset,
-            .total_records = wal.total_records,
-            .last_key_offset = 0,
+            .first_pointer_offset = headerSize(),
+            .records_size = 0,
+            .last_pointer_offset = 0,
         };
     }
 
@@ -43,17 +42,20 @@ pub const Header = struct {
         std.mem.writeIntSliceLittle(@TypeOf(h.magic_number), buf[offset .. offset + @sizeOf(@TypeOf(h.magic_number))], h.magic_number);
         offset += @sizeOf(@TypeOf(h.magic_number));
 
-        std.mem.writeIntSliceLittle(@TypeOf(h.first_key_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.first_key_offset))], h.first_key_offset);
-        offset += @sizeOf(@TypeOf(h.first_key_offset));
+        std.mem.writeIntSliceLittle(@TypeOf(h.first_pointer_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.first_pointer_offset))], h.first_pointer_offset);
+        offset += @sizeOf(@TypeOf(h.first_pointer_offset));
 
-        std.mem.writeIntSliceLittle(@TypeOf(h.last_key_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.last_key_offset))], h.last_key_offset);
-        offset += @sizeOf(@TypeOf(h.last_key_offset));
+        std.mem.writeIntSliceLittle(@TypeOf(h.last_pointer_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.last_pointer_offset))], h.last_pointer_offset);
+        offset += @sizeOf(@TypeOf(h.last_pointer_offset));
 
         std.mem.copy(u8, buf[offset .. offset + @sizeOf(@TypeOf(h.reserved))], h.reserved[0..]);
         offset += @sizeOf(@TypeOf(h.reserved));
 
         std.mem.writeIntSliceLittle(@TypeOf(h.total_records), buf[offset .. offset + @sizeOf(@TypeOf(h.total_records))], h.total_records);
         offset += @sizeOf(@TypeOf(h.total_records));
+
+        std.mem.writeIntSliceLittle(@TypeOf(h.records_size), buf[offset .. offset + @sizeOf(@TypeOf(h.records_size))], h.records_size);
+        offset += @sizeOf(@TypeOf(h.records_size));
 
         return offset;
     }
@@ -78,9 +80,10 @@ pub const Header = struct {
         var header = Header{
             .total_records = 0,
             .reserved = undefined,
-            .last_key_offset = last_key,
-            .first_key_offset = first_key,
+            .last_pointer_offset = last_key,
+            .first_pointer_offset = first_key,
             .magic_number = magic,
+            .records_size = 0,
         };
 
         // reserved space
@@ -89,8 +92,14 @@ pub const Header = struct {
 
         // total records
         var total_records = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
-
+        offset += @sizeOf(usize);
         header.total_records = total_records;
+
+        // Size of the records store, only records without header or pointers
+        var records_size = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
+        header.records_size = records_size;
+
+        offset += @sizeOf(usize);
 
         return header;
     }
@@ -98,20 +107,21 @@ pub const Header = struct {
 
 pub fn headerSize() usize {
     // magic number + usize*3 + 128 for the reserved space
-    return @sizeOf(u8) + 128 + (@sizeOf(usize) * 3);
+    return @sizeOf(u8) + 128 + (@sizeOf(usize) * 4);
 }
 
 test "Header.size" {
     const size = @sizeOf(Header);
-    try std.testing.expectEqual(160, size);
-    try std.testing.expectEqual(@as(usize, 153), headerSize());
+    try std.testing.expectEqual(168, size);
+    try std.testing.expectEqual(@as(usize, 161), headerSize());
 }
 
 test "header.fromBytes" {
     var header = Header{
         .total_records = 10,
-        .last_key_offset = 48,
-        .first_key_offset = 40,
+        .last_pointer_offset = 48,
+        .first_pointer_offset = 40,
+        .records_size = 99,
     };
 
     var alloc = std.testing.allocator;
@@ -122,18 +132,19 @@ test "header.fromBytes" {
 
     var new_h = try Header.fromBytes(buf);
     try expectEqual(new_h.magic_number, header.magic_number);
-    try expectEqual(header.total_records, 10);
-    try expectEqual(new_h.total_records, header.total_records);
+    try expectEqual(header.total_records, new_h.total_records);
+    try expectEqual(header.records_size, new_h.records_size);
     try expectEqual(new_h.reserved, header.reserved);
-    try expectEqual(new_h.last_key_offset, header.last_key_offset);
-    try expectEqual(new_h.first_key_offset, header.first_key_offset);
+    try expectEqual(new_h.last_pointer_offset, header.last_pointer_offset);
+    try expectEqual(new_h.first_pointer_offset, header.first_pointer_offset);
 }
 
 test "header.toBytes" {
     var header = Header{
+        .records_size = 99,
         .total_records = 10,
-        .last_key_offset = 48,
-        .first_key_offset = 40,
+        .last_pointer_offset = 48,
+        .first_pointer_offset = 40,
     };
 
     var alloc = std.testing.allocator;
@@ -141,20 +152,20 @@ test "header.toBytes" {
     defer alloc.free(buf);
 
     var total_bytes = try Header.toBytes(&header, buf);
-    try expectEqual(@as(usize, 153), total_bytes);
+    try expectEqual(@as(usize, 161), total_bytes);
 
     // magic number
-    try expectEqual(@as(u8, 1), buf[0]);
+    try expectEqual(header.magic_number, buf[0]);
 
     //first key
-    try expectEqual(@as(u8, 40), buf[1]);
+    try expectEqual(header.first_pointer_offset, buf[1]);
 
     // last key
-    try expectEqual(@as(u8, 48), buf[9]);
-
-    // reserved data
-    try expectEqual(@as(u8, 0), buf[17]);
+    try expectEqual(header.last_pointer_offset, buf[9]);
 
     // total records
-    try expectEqual(@as(u8, 10), buf[145]);
+    try expectEqual(header.total_records, buf[145]);
+
+    // record size
+    try expectEqual(header.records_size, buf[153]);
 }
