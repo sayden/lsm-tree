@@ -3,13 +3,13 @@ const wal_ns = @import("./memory_wal.zig");
 const pointer = @import("./pointer.zig");
 const record_ns = @import("./record.zig");
 const dm_ns = @import("./disk_manager.zig");
-const header = @import("./header.zig");
+const HeaderPkg = @import("./header.zig");
 
 const Pointer = pointer.Pointer;
 const Wal = wal_ns.MemoryWal;
 const Record = record_ns.Record;
 const DiskManager = dm_ns.DiskManager;
-const Header = header.Header;
+const Header = HeaderPkg.Header;
 const Op = @import("./ops.zig").Op;
 
 /// A SST or Sorted String Table is created from a Wal object. The structure is the following:
@@ -21,13 +21,14 @@ const Op = @import("./ops.zig").Op;
 ///
 /// KEYS CHUNK
 /// Contiguous array of keys only with pointers to values in the data chunk
-pub fn Sst(comptime WalType: type) type {
-    return struct {
+pub const Sst = struct {
         const Self = @This();
 
         header: Header,
-        file: *std.fs.File,
-        wal: *WalType,
+        allocator: *std.mem.Allocator,
+
+        mem: []*Record,
+
         // first_pointer: *Pointer,
         // last_pointer: *Pointer,
 
@@ -41,12 +42,12 @@ pub fn Sst(comptime WalType: type) type {
             _ = bytes_read;
 
             const h = try Header.fromBytes(data);
-            var wal = try WalType.init(allocator);
-            defer wal.deinit(); //delete
+            
+
             return Self{
-                .wal = wal,
-                .file = f,
                 .header = h,
+                .mem = try allocator.alloc(*Record, h.records_size),
+                .allocator = allocator,
             };
         }
 
@@ -56,14 +57,44 @@ pub fn Sst(comptime WalType: type) type {
             var stat = try f.stat();
             std.debug.print("Size: {}\n", .{stat.size});
         }
-    };
-}
+
+        pub fn fromBytes(self: *Self, fileBytes: []u8) !usize {
+            std.debug.print("{}\n", .{self.header});
+            var offset = HeaderPkg.headerSize();
+
+            // Read records
+            while (offset < HeaderPkg.headerSize() + self.header.records_size) {
+                var r = Record.fromBytes(fileBytes[offset..], self.allocator) orelse return offset;
+                std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
+                self.mem[self.current_mem_index] = r;
+                self.current_mem_index += 1;
+                offset += r.bytesLen();
+                std.debug.print("Offset: {d}, len: {d}\n", .{ offset, fileBytes.len });
+            }
+
+            //Read pointers?
+            while(offset < fileBytes.len) {
+                var p = try Pointer.fromBytes(fileBytes[offset..]);
+                _ = p;
+
+            }
+
+            return offset;
+        }
+};
 
 test "sdfasdf" {
     var allocator = std.testing.allocator;
+    var WalType = Wal(512);
+    var wal = WalType.init(&allocator);
+    
+    try wal.appendKv("hell0", "world");
+    try wal.appendKv("hell1", "world");
+    try wal.appendKv("hell2", "world");
+    try wal.appendKv("hell0", "world0");
+
     var f = try std.fs.openFileAbsolute("/tmp/hello", std.fs.File.OpenFlags{});
     defer f.close();
 
-    const WalType = Wal(100);
-    _ = try Sst(WalType).init(&f, &allocator);
+    _ = try Sst.init(&f, &allocator);
 }

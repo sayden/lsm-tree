@@ -217,6 +217,11 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             }
 
             //Read pointers?
+            while(offset < fileBytes.len) {
+                var p = try Pointer.fromBytes(fileBytes[offset..]);
+                _ = p;
+
+            }
 
             return offset;
         }
