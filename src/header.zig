@@ -4,11 +4,11 @@ const expectEqual = std.testing.expectEqual;
 const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
 
 /// 1 byte of magic number
-/// 8 bytes with the offset of the first key in the "keys" chunk.
-/// 8 bytes with the offset of the last key in the "keys" chunk. This actually ocupes 16 bytes in memory because it's an optional
-/// 8 bytes with the offset of the beginning of the "keys" chunk.
+/// 8 bytes with the offset of the first pointers in the "pointers" chunk.
+/// 8 bytes with the offset of the last pointers in the "pointers" chunk. This actually ocupes 16 bytes in memory because it's an optional
 /// 8 bytes of total records
 /// 8 bytes of total records size
+/// 128 bytes reserved
 pub const Header = struct {
     //magic number
     magic_number: u8 = 1,
@@ -37,27 +37,20 @@ pub const Header = struct {
             return Error.OutputArrayTooSmall;
         }
 
-        var offset: usize = 0;
+        var writerType = std.io.fixedBufferStream(buf);
+        var writer = writerType.writer();
+        return h.toBytesWriter(writer);
+    }
 
-        std.mem.writeIntSliceLittle(@TypeOf(h.magic_number), buf[offset .. offset + @sizeOf(@TypeOf(h.magic_number))], h.magic_number);
-        offset += @sizeOf(@TypeOf(h.magic_number));
+    pub fn toBytesWriter(h: *Header, writer: anytype) !usize {
+        try writer.writeIntLittle(u8, h.magic_number);
+        try writer.writeIntLittle(usize, h.first_pointer_offset);
+        try writer.writeIntLittle(usize, h.last_pointer_offset);
+        _ = try writer.write(&h.reserved);
+        try writer.writeIntLittle(usize, h.total_records);
+        try writer.writeIntLittle(usize, h.records_size);
 
-        std.mem.writeIntSliceLittle(@TypeOf(h.first_pointer_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.first_pointer_offset))], h.first_pointer_offset);
-        offset += @sizeOf(@TypeOf(h.first_pointer_offset));
-
-        std.mem.writeIntSliceLittle(@TypeOf(h.last_pointer_offset), buf[offset .. offset + @sizeOf(@TypeOf(h.last_pointer_offset))], h.last_pointer_offset);
-        offset += @sizeOf(@TypeOf(h.last_pointer_offset));
-
-        std.mem.copy(u8, buf[offset .. offset + @sizeOf(@TypeOf(h.reserved))], h.reserved[0..]);
-        offset += @sizeOf(@TypeOf(h.reserved));
-
-        std.mem.writeIntSliceLittle(@TypeOf(h.total_records), buf[offset .. offset + @sizeOf(@TypeOf(h.total_records))], h.total_records);
-        offset += @sizeOf(@TypeOf(h.total_records));
-
-        std.mem.writeIntSliceLittle(@TypeOf(h.records_size), buf[offset .. offset + @sizeOf(@TypeOf(h.records_size))], h.records_size);
-        offset += @sizeOf(@TypeOf(h.records_size));
-
-        return offset;
+        return headerSize();
     }
 
     pub fn fromBytes(buf: []u8) !Header {
@@ -151,8 +144,10 @@ test "header.toBytes" {
     var buf = try alloc.alloc(u8, 512);
     defer alloc.free(buf);
 
-    var total_bytes = try Header.toBytes(&header, buf);
-    try expectEqual(@as(usize, 161), total_bytes);
+    var writerType = std.io.fixedBufferStream(buf);
+    var writer = writerType.writer();
+
+    _ = try Header.toBytesWriter(&header, writer);
 
     // magic number
     try expectEqual(header.magic_number, buf[0]);

@@ -28,6 +28,7 @@ pub const Sst = struct {
         allocator: *std.mem.Allocator,
 
         mem: []*Record,
+        pointers: []*Pointer,
 
         // first_pointer: *Pointer,
         // last_pointer: *Pointer,
@@ -47,6 +48,7 @@ pub const Sst = struct {
             return Self{
                 .header = h,
                 .mem = try allocator.alloc(*Record, h.records_size),
+                .pointers = try allocator.alloc(*Pointer, h.records_size),
                 .allocator = allocator,
             };
         }
@@ -73,28 +75,41 @@ pub const Sst = struct {
             }
 
             //Read pointers?
+            var current_pointer_index: usize = 0;
             while(offset < fileBytes.len) {
-                var p = try Pointer.fromBytes(fileBytes[offset..]);
-                _ = p;
-
+                var p = try try Pointer.fromBytes(fileBytes[offset..]);
+                self.pointers[current_pointer_index] = p;
+                offset += p.bytesLen();
             }
 
             return offset;
         }
 };
 
-test "sdfasdf" {
-    var allocator = std.testing.allocator;
-    var WalType = Wal(512);
-    var wal = WalType.init(&allocator);
-    
-    try wal.appendKv("hell0", "world");
-    try wal.appendKv("hell1", "world");
-    try wal.appendKv("hell2", "world");
-    try wal.appendKv("hell0", "world0");
+// test "sst.fromBytes" {
+//     var allocator = std.testing.allocator;
+//     const WalType = @import("./memory_wal.zig").MemoryWal(4098);
 
-    var f = try std.fs.openFileAbsolute("/tmp/hello", std.fs.File.OpenFlags{});
-    defer f.close();
+//     var wal = try WalType.init(&allocator);
 
-    _ = try Sst.init(&f, &allocator);
-}
+//     try wal.append(try Record.init("hell0", "world1", Op.Update, &allocator));
+//     try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
+//     try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
+//     wal.sort();
+
+//     var buf = try allocator.alloc(u8, 4096);
+//     defer allocator.free(buf);
+
+//     var f = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
+//     defer f.close();
+
+//     const bytes_written = try wal.toBytes(buf);
+//     std.debug.print("{} bytes written\n{s}\n", .{ bytes_written, buf[0..bytes_written] });
+
+//     wal.deinit_cascade();
+
+//     const sst = Sst.init(null, &allocator)
+
+//     const bytes_read = try wal.fromBytes(buf[0..bytes_written]);
+//     std.debug.print("{} bytes read\n", .{bytes_read});
+// }

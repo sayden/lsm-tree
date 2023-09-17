@@ -4,6 +4,7 @@ const expectEq = std.testing.expectEqual;
 
 const Op = @import("./ops.zig").Op;
 const lsmtree = @import("./record.zig");
+const Pointer = @import("./pointer.zig").Pointer;
 
 pub const RecordError = error{ BufferTooSmall, KeyTooBig };
 pub const RecordLengthType: type = usize;
@@ -91,44 +92,37 @@ pub const Record = struct {
 
     /// TODO Update comment. Writes into the provided buf the data of the record in a contiguous array as described
     /// in fn Record()
-    pub fn toBytes(record: *Record, buf: []u8) RecordError!usize {
-        var offset: usize = 0;
+    pub fn toBytes(self: *Record, buf: []u8) !usize {
+        var writerType = std.io.fixedBufferStream(buf);
+        var writer = writerType.writer();
+        return self.toBytesWriter(writer);
+    }
 
-        //Abort early if necessary
-        if (buf.len < record.record_size_in_bytes) {
-            return RecordError.BufferTooSmall;
-        }
-
+    pub fn toBytesWriter(record: *Record, writer: anytype) !usize {
         if (record.key.len > std.math.maxInt(KeyLengthType)) {
             return RecordError.KeyTooBig;
         }
-        buf[0] = @intFromEnum(record.op);
-        offset += 1;
+
+        const op = [_]u8{@intFromEnum(record.op)};
+        _ = try writer.write(&op);
 
         // Write N bytes to indicate the total size of the record. N is defined as the number of bytes
         // that a type RecordLengthType can store (8 for u64, 4 for a u32, etc.)
-        std.mem.writeIntSliceLittle(RecordLengthType, buf[offset .. offset + @sizeOf(RecordLengthType)], record.record_size_in_bytes);
-        offset += @sizeOf(RecordLengthType);
+        try writer.writeIntLittle(RecordLengthType, record.record_size_in_bytes);
 
-        // We can truncate here because we have already checked that the size will fit above
+        // We can truncate here because we have already checked above that the size will fit
         const temp = @as(u16, @truncate(record.key.len));
-        std.mem.writeIntSliceLittle(u16, buf[offset .. offset + @sizeOf(u16)], temp);
-        offset += @sizeOf(u16);
+        try writer.writeIntLittle(u16, temp);
 
-        // TODO Write a function that "Reads as stream" (alas Read interface) instead of copying values
-        std.mem.copy(u8, buf[offset .. offset + record.key.len], record.key);
-        offset += record.key.len;
+        _ = try writer.writeAll(record.key);
+        _ = try writer.writeAll(record.value);
 
-        std.mem.copy(u8, buf[offset .. offset + record.value.len], record.value);
-
-        return record.record_size_in_bytes;
+        return writer.context.getPos();
     }
 
-    pub fn toBytesAlloc(record: *Record, alloc: *std.mem.Allocator) ![]u8 {
-        var buf = try alloc.alloc(u8, record.bytesLen());
-        _ = toBytes(record, buf) catch |err|
-            return err;
-
+    pub fn toBytesAlloc(self: *Record, alloc: *std.mem.Allocator) ![]u8 {
+        var buf = try alloc.alloc(u8, self.bytesLen());
+        _ = try self.toBytes(buf);
         return buf;
     }
 
@@ -168,7 +162,24 @@ pub const Record = struct {
         var r = Record.init(key, value, op, allocator) catch return null;
         return r;
     }
+
+    pub fn expectedPointerSize(self: *Record) usize {
+        var p = Pointer{
+            .key = self.key,
+            .op = Op.Create,
+            .byte_offset = 0,
+        };
+        return p.bytesLen();
+    }
 };
+
+test "record.expected pointer size" {
+    var alloc = std.testing.allocator;
+    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    defer r.deinit();
+    var size = Record.expectedPointerSize(r);
+    try std.testing.expectEqual(@as(usize, 16), size);
+}
 
 test "record.init" {
     var alloc = std.testing.allocator;

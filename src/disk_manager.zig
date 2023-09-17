@@ -69,15 +69,17 @@ pub fn DiskManager(comptime WalType: type) type {
             var file_id: []u8 = try self.get_new_file_id(allocator);
             var full_path: []u8 = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
 
+            var f: ?std.fs.File = null;
             while (true) {
-                _ = std.fs.openFileAbsolute(full_path, std.fs.File.OpenFlags{}) catch |err| {
+                f = std.fs.openFileAbsolute(full_path, std.fs.File.OpenFlags{}) catch |err| {
                     switch (err) {
                         std.fs.File.OpenError.FileNotFound => {
                             allocator.free(file_id);
                             break;
                         },
-                        else => {
+                        std.fs.File.OpenError.PathAlreadyExists => {
                             std.debug.print("File {s} already exists, retrying\n", .{full_path});
+                            f.?.close();
 
                             if (totalAttempts > 100) {
                                 allocator.free(file_id);
@@ -94,15 +96,19 @@ pub fn DiskManager(comptime WalType: type) type {
                             full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
                             continue;
                         },
+                        else => {
+                            return err;
+                        },
                     }
                 };
             }
 
             std.debug.print("Creating file {s}\n", .{full_path});
 
-            var f = try std.fs.createFileAbsolute(full_path, File.CreateFlags{ .exclusive = true });
+            var file = try std.fs.createFileAbsolute(full_path, std.fs.File.CreateFlags{});
+
             return FileData{
-                .file = f,
+                .file = file,
                 .filename = full_path,
                 .alloc = allocator,
             };

@@ -4,6 +4,7 @@ const Op = @import("./ops.zig").Op;
 const Record = rec.Record;
 const RecordError = rec.RecordError;
 const expect = std.testing.expect;
+const expectEqual = std.testing.expectEqual;
 const HeaderPkg = @import("./header.zig");
 const Header = HeaderPkg.Header;
 const lsmtree = @import("./main.zig");
@@ -26,6 +27,10 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         mem: []*Record,
         current_mem_index: usize,
 
+        // Pointer size must be pre-calculated before persisting because the header is the first
+        // thing written on files. Changing header to EOF would fix this problem
+        pointers_size: usize,
+
         allocator: *std.mem.Allocator,
 
         // Start a new in memory WAL using the provided allocator
@@ -41,6 +46,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             wal.mem = try allocator.alloc(*Record, size_in_bytes / Record.minimum_size());
             wal.current_mem_index = 0;
             wal.header = Header.init();
+            wal.pointers_size = 0;
 
             return wal;
         }
@@ -63,6 +69,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             self.header.total_records += 1;
             self.header.first_pointer_offset += record_size;
             self.header.records_size += record_size;
+            self.pointers_size += r.expectedPointerSize();
         }
 
         // Compare the provided key with the ones in memory and
@@ -127,26 +134,36 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         /// Pointer
         /// ...
         /// EOF
-        pub fn persist(self: *Self, allocator: *std.mem.Allocator, file: *std.fs.File) !usize {
+        pub fn toBytesWriter(self: *Self, writer: anytype) !usize {
             var iter = self.iterator();
 
-            var written: usize = 0;
+            var record_total_bytes: usize = 0;
+            _ = record_total_bytes;
 
-            // TODO remove hardcoding on the next line
-            var buf = try allocator.alloc(u8, 4096);
-            defer allocator.free(buf);
+            // Write the header
+            _ = try self.header.toBytesWriter(writer);
 
-            var head_offset: usize = HeaderPkg.headerSize();
-            var tail_offset: usize = self.recordsSize();
-            var pointer_total_bytes: usize = 0;
-
-            // Write the data and pointers chunks
+            // Write only records
             while (iter.next()) |record| {
                 // record
-                var record_total_bytes = try Record.toBytes(record, buf);
-                written += try file.pwrite(buf[0..record_total_bytes], head_offset);
-                head_offset += record_total_bytes;
+                _ = try record.toBytesWriter(writer);
+            }
 
+            return writer.context.getPos();
+        }
+
+        pub fn persist(self: *Self, file: *std.fs.File) !usize {
+            var writer = file.writer();
+
+            // Headers and records are written
+            var written = try self.toBytesWriter(writer);
+            var bytes_written: usize = 0;
+
+            var iter = self.iterator();
+            var tail_offset = written;
+
+            // Write pointers now
+            while (iter.next()) |record| {
                 // pointer
                 var pointer_ = Pointer{
                     .op = record.op,
@@ -154,21 +171,22 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
                     .byte_offset = tail_offset,
                 };
 
-                pointer_total_bytes = try Pointer.toBytes(pointer_, buf);
-                written += try file.pwrite(buf[0..pointer_total_bytes], tail_offset);
-                tail_offset += pointer_total_bytes;
+                bytes_written = try pointer_.toBytesWriter(writer);
+                tail_offset += bytes_written;
+                written += bytes_written;
             }
 
-            // update last known data on the header
-            self.header.last_pointer_offset = tail_offset - pointer_total_bytes;
+            file.sync() catch |err| {
+                std.debug.print("Error syncing file: {}\n", .{err});
+            };
 
-            // Write the header
-            written += try self.writeHeader(file);
+            return writer.context.getPos();
+        }
 
-            try file.sync();
-            file.close();
-
-            return written;
+        pub fn toBytes(self: *Self, buf: []u8) !usize {
+            var writerType = std.io.fixedBufferStream(buf);
+            var writer = writerType.writer();
+            return self.toBytesWriter(writer);
         }
 
         fn recordsSize(self: *Self) usize {
@@ -203,67 +221,21 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         pub fn fromBytes(self: *Self, fileBytes: []u8) !usize {
             // Read header
             self.header = try Header.fromBytes(fileBytes[0..HeaderPkg.headerSize()]);
-            std.debug.print("{}\n", .{self.header});
             var offset = HeaderPkg.headerSize();
 
             // Read records
             while (offset < HeaderPkg.headerSize() + self.recordsSize()) {
                 var r = Record.fromBytes(fileBytes[offset..], self.allocator) orelse return offset;
-                std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
+                // std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
                 self.mem[self.current_mem_index] = r;
                 self.current_mem_index += 1;
                 offset += r.bytesLen();
-                std.debug.print("Offset: {d}, len: {d}\n", .{ offset, fileBytes.len });
+                // std.debug.print("Offset: {d}, len: {d}\n", .{ offset, fileBytes.len });
             }
 
-            //Read pointers?
-            while(offset < fileBytes.len) {
-                var p = try Pointer.fromBytes(fileBytes[offset..]);
-                _ = p;
-
-            }
+            // WAL files does not have pointers
 
             return offset;
-        }
-
-        /// This is almost exactly the same than `persist`
-        pub fn toBytes(self: *Self, buf: []u8) !usize {
-            var iter = self.iterator();
-            std.debug.print("WAL has size {d}\n", .{self.recordsSize()});
-
-            var written: usize = 0;
-
-            var head_offset: usize = HeaderPkg.headerSize();
-            var tail_offset: usize = self.recordsSize() + head_offset;
-            var pointer_total_bytes: usize = 0;
-            var record_total_bytes: usize = 0;
-
-            // Write the data and pointers chunks
-            while (iter.next()) |record| {
-                // record
-                record_total_bytes = try Record.toBytes(record, buf[head_offset..]);
-                written += record_total_bytes;
-                head_offset += record_total_bytes;
-
-                // pointer
-                var pointer_ = Pointer{
-                    .op = record.op,
-                    .key = record.key,
-                    .byte_offset = tail_offset,
-                };
-
-                pointer_total_bytes = try Pointer.toBytes(pointer_, buf);
-                written += pointer_total_bytes;
-                tail_offset += pointer_total_bytes;
-            }
-
-            // update last known data on the header
-            self.header.last_pointer_offset = tail_offset - pointer_total_bytes;
-
-            // Write the header
-            written += try self.header.toBytes(buf[0..HeaderPkg.headerSize()]);
-
-            return written;
         }
 
         const RecordIterator = struct {
@@ -448,7 +420,7 @@ test "wal.find a key" {
 }
 
 test "wal.size on memory" {
-    try std.testing.expectEqual(208, @sizeOf(MemoryWal(100)));
+    try std.testing.expectEqual(216, @sizeOf(MemoryWal(100)));
 }
 
 test "wal.persist" {
@@ -458,35 +430,39 @@ test "wal.persist" {
     var wal = try WalType.init(&allocator);
     defer wal.deinit_cascade();
 
-    var r = try Record.init("hell0", "world1", Op.Update, &allocator);
+    var r = try Record.init("hell0", "world1", Op.Delete, &allocator);
     try wal.append(r);
     try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
     try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
     wal.sort();
 
-    try std.testing.expectEqual(@as(usize, 22), r.bytesLen());
-    std.debug.print("\nrecord size: {d}\n", .{r.bytesLen()});
-
-    std.debug.print("wal size in bytes {d}\n", .{wal.header.records_size});
-    std.debug.print("wal total records {d}\n", .{wal.header.total_records});
+    try expectEqual(@as(usize, 22), r.bytesLen());
+    try expectEqual(@as(usize, 66), wal.header.records_size);
+    try expectEqual(@as(usize, 3), wal.header.total_records);
+    try expectEqual(@as(usize, 161), HeaderPkg.headerSize());
+    try expectEqual(@as(usize, 16), r.expectedPointerSize());
 
     const DiskManagerType = DiskManager(WalType);
     var dm = try DiskManagerType.init("/tmp");
     var fileData = try dm.new_file(&allocator);
+    defer fileData.deinit();
 
-    std.debug.print("Header length {d}\n", .{HeaderPkg.headerSize()});
-    const bytes = try wal.persist(&allocator, &fileData.file);
+    try expectEqual(@as(usize, 66), (r.bytesLen() * 3));
+    try expectEqual(@as(usize, 48), (3 * r.expectedPointerSize()));
+    try expectEqual(@as(usize, 275), HeaderPkg.headerSize() + (r.bytesLen() * 3) + (3 * r.expectedPointerSize()));
 
-    std.debug.print("{d} bytes written into sst file {s}\n", .{ bytes, fileData.filename });
-    defer allocator.free(fileData.filename);
+    const bytes_written = try wal.persist(&fileData.file);
 
-    std.debug.print("Opening {s}\n", .{fileData.filename});
+    try expectEqual(@as(usize, HeaderPkg.headerSize() + (r.bytesLen() * 3) + (3 * r.expectedPointerSize())), bytes_written);
+
+    try fileData.file.seekTo(0);
     const file = try std.fs.openFileAbsolute(fileData.filename, std.fs.File.OpenFlags{});
     defer file.close();
 
     var headerBuf: [HeaderPkg.headerSize()]u8 = undefined;
     _ = try file.read(&headerBuf);
-    defer std.fs.deleteFileAbsolute(fileData.filename) catch unreachable;
+
+    try std.fs.deleteFileAbsolute(fileData.filename);
 }
 
 test "wal.fromBytes" {
@@ -503,13 +479,38 @@ test "wal.fromBytes" {
     var buf = try allocator.alloc(u8, 4096);
     defer allocator.free(buf);
 
-    const bytes_written = try wal.toBytes(buf);
-    std.debug.print("{} bytes written\n{s}\n", .{ bytes_written, buf[0..bytes_written] });
+    const bytes_written: usize = try wal.toBytes(buf);
+
+    try expectEqual(@as(usize, 275), bytes_written);
 
     wal.deinit_cascade();
     wal = try WalType.init(&allocator);
     defer wal.deinit_cascade();
 
     const bytes_read = try wal.fromBytes(buf[0..bytes_written]);
-    std.debug.print("{} bytes read\n", .{bytes_read});
+    try expectEqual(@as(usize, 275), bytes_read);
+}
+
+test "wal.toBytes" {
+    var allocator = std.testing.allocator;
+    const WalType = MemoryWal(4098);
+
+    var wal = try WalType.init(&allocator);
+
+    try wal.append(try Record.init("hell0", "world1", Op.Update, &allocator));
+    try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
+    try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
+    wal.sort();
+
+    var buf = try allocator.alloc(u8, 4096);
+    defer allocator.free(buf);
+
+    const bytes_written = try wal.toBytes(buf);
+
+    wal.deinit_cascade();
+    wal = try WalType.init(&allocator);
+    defer wal.deinit_cascade();
+
+    const bytes_read = try wal.fromBytes(buf[0..bytes_written]);
+    try expectEqual(@as(usize, 227), bytes_read);
 }

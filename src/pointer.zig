@@ -1,5 +1,5 @@
 const std = @import("std");
-
+const String = @import("./pkg//strings/strings.zig").String;
 const Record = @import("./record.zig").Record;
 const KeyLengthType = @import("./record.zig").KeyLengthType;
 const Op = @import("ops.zig").Op;
@@ -18,7 +18,7 @@ pub const Pointer = struct {
 
     const Self = @This();
 
-    pub fn bytesLen(self: *const Self) usize {
+    pub fn bytesLen(self: *Self) usize {
         return 1 + @sizeOf(KeyLengthType) + self.key.len + @sizeOf(@TypeOf(self.byte_offset));
     }
 
@@ -49,12 +49,21 @@ pub const Pointer = struct {
     // 2 bytes: Key size
     // X bytes: Key
     // 8 bytes: Offset in the data
-    pub fn toBytesAlloc(self: Pointer, allocator: *std.mem.Allocator) ![]u8 {
+    pub fn toBytesAlloc(self: *Pointer, allocator: *std.mem.Allocator) ![]u8 {
         var buf = try allocator.alloc(u8, self.bytesLen());
-        _ = toBytes(self, buf) catch |err|
-            return err;
+        _ = try self.toBytes(buf);
 
         return buf;
+    }
+
+    pub fn toBytes(pointer: *Pointer, buf: []u8) !usize {
+        if (pointer.bytesLen() > buf.len) {
+            return Error.ArrayTooSmall;
+        }
+
+        var writerType = std.io.fixedBufferStream(buf);
+        var writer = writerType.writer();
+        return pointer.toBytesWriter(writer);
     }
 
     // Get a byte array representation of a pointer using the provided array.
@@ -63,31 +72,21 @@ pub const Pointer = struct {
     // 2 bytes: Key size
     // X bytes: Key
     // 8 bytes: Offset in the data
-    pub fn toBytes(pointer: Pointer, buf: []u8) Error!usize {
-        if (pointer.bytesLen() > buf.len) {
-            return Error.ArrayTooSmall;
-        }
-
-        var offset: usize = 0;
-
+    pub fn toBytesWriter(self: *Pointer, writer: anytype) !usize {
         // Op
-        buf[0] = @intFromEnum(pointer.op);
-        // std.mem.writeIntSliceLittle(u8, buf[0], @enumToInt(pointer.op));
-        offset += 1;
+        const op = [1]u8{@intFromEnum(self.op)};
+        _ = try writer.write(&op);
 
         // key length
-        std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @as(KeyLengthType, @truncate(pointer.key.len)));
-        offset += @sizeOf(KeyLengthType);
+        try writer.writeIntLittle(KeyLengthType, @as(u16, @truncate(self.key.len)));
 
         // key
-        std.mem.copy(u8, buf[offset .. offset + pointer.key.len], pointer.key);
-        offset += pointer.key.len;
+        _ = try writer.write(self.key);
 
         //offset
-        std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(pointer.byte_offset))], pointer.byte_offset);
-        offset += @sizeOf(@TypeOf(pointer.byte_offset));
+        try writer.writeIntLittle(usize, @as(usize, self.byte_offset));
 
-        return offset;
+        return self.bytesLen();
     }
 
     // Reads the provided array and return a Pointer from the contents. If the contents of the array
@@ -124,9 +123,12 @@ pub const Pointer = struct {
 };
 
 test "pointer.bytesLen" {
+    var s = try String.init_with_contents(std.testing.allocator, "Hello");
+    defer s.deinit();
+
     var p = Pointer{
         .op = Op.Create,
-        .key = "hello",
+        .key = s.str(),
         .byte_offset = 100,
     };
 
@@ -162,13 +164,34 @@ test "pointer.toBytes" {
     };
 
     var alloc = std.testing.allocator;
-    var res = try Pointer.toBytesAlloc(p, &alloc);
+    var res = try p.toBytesAlloc(&alloc);
     defer alloc.free(res);
 
-    for (buf, 0..) |b, i| {
+    for (buf[0..10], 0..) |b, i| {
         // std.debug.print("{d} vs {d}\n", .{ res[i], b });
-        try std.testing.expectEqual(res[i], b);
+        try std.testing.expectEqual(b, res[i]);
     }
+}
+
+test "pointer.toBytesWriter" {
+    var p = Pointer{
+        .op = Op.Create,
+        .key = "hello",
+        .byte_offset = 100, // char d
+    };
+
+    var allocator = std.testing.allocator;
+    var buf = try allocator.alloc(u8, p.bytesLen());
+    defer allocator.free(buf);
+
+    var writerType = std.io.fixedBufferStream(buf);
+    var writer = writerType.writer();
+    _ = try p.toBytesWriter(writer);
+
+    // char d at the end of "hello" is the byte_offset 100 written above in the example
+    try std.testing.expect(!std.mem.eql(u8, buf, "hellod"));
+    try std.testing.expectEqual(@as(usize, 16), p.bytesLen());
+    try std.testing.expectEqual(buf[0], @intFromEnum(Op.Create));
 }
 
 test "pointer.fromBytes" {
@@ -179,7 +202,7 @@ test "pointer.fromBytes" {
         100, 0, 0, 0, 0, 0, 0, 0, //offset
     };
 
-    const p = try Pointer.fromBytes(&buf);
+    var p = try Pointer.fromBytes(&buf);
     const eq = std.testing.expectEqual;
     try eq(@as(usize, 5), p.key.len);
     try eq(@as(usize, 100), p.byte_offset);
@@ -190,7 +213,6 @@ test "pointer.fromBytes" {
 }
 
 test "pointer.try contains" {
-    const String = @import("./pkg/strings/strings.zig").String;
     var alloc = std.testing.allocator;
     var s = String.init(alloc);
     defer s.deinit();
