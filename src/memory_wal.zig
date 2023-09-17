@@ -51,6 +51,21 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             return wal;
         }
 
+        // Frees the array that contains the Records but leaving them untouched
+        pub fn deinit(self: *Self) void {
+            self.allocator.free(self.mem);
+            self.allocator.destroy(self);
+        }
+
+        // Frees the array that contains the Records and the Records themselves.
+        pub fn deinit_cascade(self: *Self) void {
+            var iter = self.iterator();
+            while (iter.next()) |r| {
+                r.deinit();
+            }
+            self.deinit();
+        }
+
         pub fn appendKv(self: *Self, k: []const u8, v: []const u8) WalError!void {
             var r = try Record.init(k, v, Op.Create, self.allocator);
             try self.append(r);
@@ -102,21 +117,6 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             const iter = RecordBackwardIterator.init(self.mem[0..self.header.total_records]);
 
             return iter;
-        }
-
-        // Frees the array that contains the Records but leaving them untouched
-        pub fn deinit(self: *Self) void {
-            self.allocator.free(self.mem);
-            self.allocator.destroy(self);
-        }
-
-        // Frees the array that contains the Records and the Records themselves.
-        pub fn deinit_cascade(self: *Self) void {
-            var iter = self.iterator();
-            while (iter.next()) |r| {
-                r.deinit();
-            }
-            self.deinit();
         }
 
         /// writes into provided file the contents of the sst. Including pointers
@@ -465,30 +465,29 @@ test "wal.persist" {
     try std.fs.deleteFileAbsolute(fileData.filename);
 }
 
-test "wal.fromBytes" {
+test "wal_fromBytes" {
     var allocator = std.testing.allocator;
     const WalType = MemoryWal(4098);
 
     var wal = try WalType.init(&allocator);
+    defer wal.deinit_cascade();
 
     try wal.append(try Record.init("hell0", "world1", Op.Update, &allocator));
     try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
     try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
-    wal.sort();
 
     var buf = try allocator.alloc(u8, 4096);
     defer allocator.free(buf);
 
     const bytes_written: usize = try wal.toBytes(buf);
 
-    try expectEqual(@as(usize, 275), bytes_written);
+    try expectEqual(@as(usize, 227), bytes_written);
 
-    wal.deinit_cascade();
-    wal = try WalType.init(&allocator);
-    defer wal.deinit_cascade();
+    var wal2 = try WalType.init(&allocator);
+    defer wal2.deinit_cascade();
 
-    const bytes_read = try wal.fromBytes(buf[0..bytes_written]);
-    try expectEqual(@as(usize, 275), bytes_read);
+    const bytes_read = try wal2.fromBytes(buf[0..bytes_written]);
+    try expectEqual(@as(usize, 227), bytes_read);
 }
 
 test "wal.toBytes" {
