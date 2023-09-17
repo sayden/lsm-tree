@@ -9,7 +9,7 @@ const MakeDirError = std.os.MakeDirError;
 const OpenFileError = std.is.OpenFileError;
 const RndGen = std.rand.DefaultPrng;
 
-const FileData = struct {
+pub const FileData = struct {
     file: std.fs.File,
     filename: []const u8,
     alloc: *std.mem.Allocator,
@@ -41,6 +41,7 @@ pub const DiskManager = struct {
         //TODO Read contents of folder, return error if unexpected content
         // Find SST ID File by its extension
         var dir = try std.fs.openIterableDirAbsolute(folder_path, std.fs.Dir.OpenDirOptions{});
+        defer dir.close();
         var iter = dir.iterate();
 
         //TODO URGENT fix this
@@ -65,6 +66,7 @@ pub const DiskManager = struct {
     pub fn new_file(self: *Self, allocator: *std.mem.Allocator) !FileData {
         var totalAttempts: usize = 0;
         var file_id: []u8 = try self.get_new_file_id(allocator);
+
         var full_path: []u8 = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
 
         var f: ?std.fs.File = null;
@@ -75,30 +77,30 @@ pub const DiskManager = struct {
                         allocator.free(file_id);
                         break;
                     },
-                    std.fs.File.OpenError.PathAlreadyExists => {
-                        std.debug.print("File {s} already exists, retrying\n", .{full_path});
-                        f.?.close();
-
-                        if (totalAttempts > 100) {
-                            allocator.free(file_id);
-                            allocator.free(full_path);
-                            return err;
-                        }
-
-                        totalAttempts += 1;
-
-                        allocator.free(file_id);
-                        file_id = try self.get_new_file_id(allocator);
-
-                        allocator.free(full_path);
-                        full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
-                        continue;
-                    },
                     else => {
+                        std.debug.print("Unknown error {s}.\n{!}\n", .{ full_path, err });
+                        f.?.close();
                         return err;
                     },
                 }
             };
+            f.?.close();
+
+            std.debug.print("File {s} already exists, retrying\n", .{full_path});
+
+            if (totalAttempts > 100) {
+                allocator.free(file_id);
+                allocator.free(full_path);
+                return std.fs.File.OpenError.Unexpected;
+            }
+
+            totalAttempts += 1;
+
+            allocator.free(file_id);
+            file_id = try self.get_new_file_id(allocator);
+
+            allocator.free(full_path);
+            full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
         }
 
         std.debug.print("Creating file {s}\n", .{full_path});
@@ -113,12 +115,8 @@ pub const DiskManager = struct {
     }
 
     // It must return a unique numeric id for the file being created. Caller is owner of array response
-    fn get_new_file_id(self: *Self, allocator: *std.mem.Allocator) ![]u8 {
-        _ = self;
-        // var full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.folder_path, filename });
-        // std.fs.openFileAbsolute();
-
-        var u64Value: u64 = @as(u64, @intCast(std.time.timestamp()));
+    fn get_new_file_id(_: *Self, allocator: *std.mem.Allocator) ![]u8 {
+        var u64Value: u64 = @as(u64, @intCast(std.time.milliTimestamp()));
 
         var rnd = RndGen.init(u64Value);
         var n = rnd.random().int(u32);
@@ -128,10 +126,11 @@ pub const DiskManager = struct {
         return buf;
     }
 
-    // TODO Return a list of the SST files in the folder.
+    // FREE the returned value
     fn get_files(_: *Self, alloc: *std.mem.Allocator) ![]std.fs.IterableDir.Entry {
         // Read every file from self.folder_path
         var dirIterator = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
+        defer dirIterator.close();
 
         var iterator = dirIterator.iterate();
         var index: usize = 0;

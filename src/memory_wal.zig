@@ -140,7 +140,6 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 
             // Write only records
             while (iter.next()) |record| {
-                // record
                 _ = try record.toBytesWriter(writer);
             }
 
@@ -172,11 +171,19 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
                 written += bytes_written;
             }
 
+            self.header.last_pointer_offset = tail_offset - bytes_written;
+
+            try file.seekTo(0);
+            var headerBuf = try self.allocator.alloc(u8, HeaderPkg.headerSize());
+            defer self.allocator.free(headerBuf);
+            _ = try self.header.toBytes(headerBuf);
+            _ = try file.write(headerBuf);
+
             file.sync() catch |err| {
                 std.debug.print("Error syncing file: {}\n", .{err});
             };
 
-            return writer.context.getPos();
+            return written;
         }
 
         pub fn toBytes(self: *Self, buf: []u8) !usize {
@@ -215,23 +222,24 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         }
 
         pub fn fromBytes(self: *Self, fileBytes: []u8) !usize {
+            var fixedReader = std.io.fixedBufferStream(fileBytes);
+            var reader = fixedReader.reader();
+            return self.fromBytesReader(reader);
+        }
+
+        pub fn fromBytesReader(self: *Self, reader: anytype) !usize {
             // Read header
-            self.header = try Header.fromBytes(fileBytes[0..HeaderPkg.headerSize()]);
-            var offset = HeaderPkg.headerSize();
+            self.header = try Header.fromReader(reader);
 
             // Read records
-            while (offset < HeaderPkg.headerSize() + self.recordsSize()) {
-                var r = try Record.fromBytes(fileBytes[offset..], self.allocator);
-                // std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
+            for (0..self.header.total_records) |_| {
+                var r = try Record.fromBytesReader(self.allocator, reader);
                 self.mem[self.current_mem_index] = r;
                 self.current_mem_index += 1;
-                offset += r.bytesLen();
-                // std.debug.print("Offset: {d}, len: {d}\n", .{ offset, fileBytes.len });
             }
 
             // WAL files does not have pointers
-
-            return offset;
+            return reader.context.getPos();
         }
 
         const RecordIterator = struct {
@@ -285,7 +293,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
     };
 }
 
-test "wal.iterator backwards" {
+test "wal_iterator backwards" {
     var alloc = std.testing.allocator;
     var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit();
@@ -301,7 +309,7 @@ test "wal.iterator backwards" {
     try std.testing.expectEqualStrings("world0", next.value);
 }
 
-test "wal.iterator" {
+test "wal_iterator" {
     var alloc = std.testing.allocator;
     var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit();
@@ -320,7 +328,7 @@ test "wal.iterator" {
     try std.testing.expectEqualStrings("world0", record.value);
 }
 
-test "wal.lexicographical_compare" {
+test "wal_lexicographical_compare" {
     var alloc = std.testing.allocator;
 
     var r1 = try Record.init("hello", "world", Op.Create, &alloc);
@@ -332,7 +340,7 @@ test "wal.lexicographical_compare" {
     try std.testing.expect(!MemoryWal(100).lexicographical_compare({}, r2, r1));
 }
 
-test "wal.sort a wal" {
+test "wal_sort" {
     var alloc = std.testing.allocator;
 
     var wal = try MemoryWal(100).init(&alloc);
@@ -353,7 +361,7 @@ test "wal.sort a wal" {
     try std.testing.expectEqualSlices(u8, wal.mem[0].key, r2.key);
 }
 
-test "wal.add record" {
+test "wal_add_record" {
     var alloc = std.testing.allocator;
 
     var wal = try MemoryWal(100).init(&alloc);
@@ -369,7 +377,7 @@ test "wal.add record" {
     try std.testing.expect(wal.header.total_records == 2);
 }
 
-test "wal.max size reached" {
+test "wal_max_size_reached" {
     var alloc = std.testing.allocator;
 
     var wal = try MemoryWal(23).init(&alloc);
@@ -390,7 +398,7 @@ test "wal.max size reached" {
     }
 }
 
-test "wal.find a key" {
+test "wal_find_a_key" {
     var alloc = std.testing.allocator;
     var wal = try MemoryWal(100).init(&alloc);
     defer wal.deinit();
@@ -415,11 +423,11 @@ test "wal.find a key" {
     try std.testing.expect(unkonwn_record == null);
 }
 
-test "wal.size on memory" {
+test "wal_size_on_memory" {
     try std.testing.expectEqual(216, @sizeOf(MemoryWal(100)));
 }
 
-test "wal.persist" {
+test "wal_persist" {
     var allocator = std.testing.allocator;
     const WalType = MemoryWal(4098);
 
@@ -481,11 +489,13 @@ test "wal_fromBytes" {
     var wal2 = try WalType.init(&allocator);
     defer wal2.deinit();
 
-    const bytes_read = try wal2.fromBytes(buf[0..bytes_written]);
+    var fixedReader = std.io.fixedBufferStream(buf[0..bytes_written]);
+    var reader = fixedReader.reader();
+    const bytes_read = try wal2.fromBytesReader(reader);
     try expectEqual(@as(usize, 227), bytes_read);
 }
 
-test "wal.toBytes" {
+test "wal_toBytes" {
     var allocator = std.testing.allocator;
     const WalType = MemoryWal(4098);
 

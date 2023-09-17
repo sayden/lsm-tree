@@ -1,5 +1,4 @@
 const std = @import("std");
-const String = @import("./pkg//strings/strings.zig").String;
 const Record = @import("./record.zig").Record;
 const KeyLengthType = @import("./record.zig").KeyLengthType;
 const Op = @import("ops.zig").Op;
@@ -13,39 +12,19 @@ const Error = error{ArrayTooSmall};
 // 8 bytes: Offset in the data
 pub const Pointer = struct {
     op: Op,
-    key: []const u8,
+    key: []u8,
     byte_offset: usize = 0,
     allocator: *std.mem.Allocator,
 
     const Self = @This();
 
-    pub fn deinit(self: Self) void {
+    pub fn deinit(self: *Self) void {
         self.allocator.free(self.key);
+        self.allocator.destroy(self);
     }
 
     pub fn bytesLen(self: *Self) usize {
         return 1 + @sizeOf(KeyLengthType) + self.key.len + @sizeOf(@TypeOf(self.byte_offset));
-    }
-
-    // Writes into the provided array a Pointer byte array using the provided Record
-    pub fn fromRecord(r: Record, buf: []u8, file_offset: usize) usize {
-        // op
-        buf[0] = @intFromEnum(r.op);
-        var offset: usize = 1;
-
-        // key length
-        std.mem.writeIntSliceLittle(KeyLengthType, buf[offset .. offset + @sizeOf(KeyLengthType)], @as(KeyLengthType, @intCast(r.key.len)));
-        offset += @sizeOf(KeyLengthType);
-
-        // key
-        std.mem.copy(u8, buf[offset .. offset + r.key.len], r.key);
-        offset += r.key.len;
-
-        //offset
-        std.mem.writeIntSliceLittle(usize, buf[offset .. offset + @sizeOf(@TypeOf(file_offset))], file_offset);
-        offset += @sizeOf(@TypeOf(file_offset));
-
-        return offset;
     }
 
     // Get a byte array representation of a pointer using the provided allocator.
@@ -94,32 +73,30 @@ pub const Pointer = struct {
         return self.bytesLen();
     }
 
-    pub fn fromBytesReader(allocator: *std.mem.Allocator, reader: anytype) !Pointer {
+    pub fn fromBytesReader(allocator: *std.mem.Allocator, reader: anytype) !*Pointer {
+        var p = try allocator.create(Pointer);
+
         //Op
-        var op = @as(Op, @enumFromInt(try reader.readByte()));
+        p.op = @as(Op, @enumFromInt(try reader.readByte()));
 
         //Key length
         const key_length = try reader.readIntLittle(KeyLengthType);
-        var key = try allocator.alloc(u8, key_length);
+        p.key = try allocator.alloc(u8, key_length);
 
         // Key
-        _ = try reader.readAtLeast(key, key_length);
+        _ = try reader.readAtLeast(p.key, key_length);
 
         // Offset
-        var byte_offset = try reader.readIntLittle(usize);
+        p.byte_offset = try reader.readIntLittle(usize);
+        p.allocator = allocator;
 
-        return Pointer{
-            .key = key,
-            .byte_offset = byte_offset,
-            .op = op,
-            .allocator = allocator,
-        };
+        return p;
     }
 
     // Reads the provided array and return a Pointer from the contents. If the contents of the array
     // are not correct, it will return a corrupted Pointer.
     // The size of this array is expected to be X + 11 being X the key length
-    pub fn fromBytes(allocator: *std.mem.Allocator, bytes: []u8) !Pointer {
+    pub fn fromBytes(allocator: *std.mem.Allocator, bytes: []u8) !*Pointer {
         var fixedReader = std.io.fixedBufferStream(bytes);
         var reader = fixedReader.reader();
         return Pointer.fromBytesReader(allocator, reader);
@@ -137,23 +114,10 @@ test "pointer_bytesLen" {
         .byte_offset = 100,
         .allocator = &allocator,
     };
-    defer p.deinit();
+    defer allocator.free(p.key);
 
     var len = p.bytesLen();
     try std.testing.expectEqual(@as(usize, 16), len);
-}
-
-test "pointer_fromRecord" {
-    var alloc = std.testing.allocator;
-    var r = try Record.init("hello", "world", Op.Delete, &alloc);
-    defer r.deinit();
-
-    var buf: [20]u8 = undefined;
-    const size = Pointer.fromRecord(r.*, &buf, 99);
-    try std.testing.expectEqual(@as(usize, 16), size);
-    try std.testing.expectEqual(@as(u8, 5), buf[1]);
-    try std.testing.expectEqual(@as(u8, 99), buf[8]);
-    try std.testing.expectEqualStrings("hello", buf[3..8]);
 }
 
 test "pointer_toBytes" {
@@ -167,7 +131,7 @@ test "pointer_toBytes" {
         .byte_offset = 100, // char d
         .allocator = &allocator,
     };
-    defer p.deinit();
+    defer allocator.free(p.key);
 
     var buf = try allocator.alloc(u8, p.bytesLen());
     defer allocator.free(buf);
@@ -183,16 +147,24 @@ test "pointer_toBytes" {
 }
 
 test "pointer_fromBytes" {
-    var buf = [_]u8{
-        0, //Op
-        5, 0, //key length
-        104, 101, 108, 108, 111, //hello (the key)
-        100, 0, 0, 0, 0, 0, 0, 0, //offset
-    };
-
     var allocator = std.testing.allocator;
-    var p = try Pointer.fromBytes(&allocator, &buf);
-    defer p.deinit();
+
+    var key = try allocator.alloc(u8, 5);
+    @memcpy(key, "hello");
+
+    var p = Pointer{
+        .op = Op.Create,
+        .key = key,
+        .allocator = &allocator,
+        .byte_offset = 100,
+    };
+    defer allocator.free(p.key);
+
+    var buf = try p.toBytesAlloc(&allocator);
+    defer allocator.free(buf);
+
+    var p2 = try Pointer.fromBytes(&allocator, buf);
+    defer p2.deinit();
 
     const eq = std.testing.expectEqual;
     try eq(@as(usize, 5), p.key.len);

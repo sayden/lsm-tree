@@ -23,7 +23,7 @@ pub const Record = struct {
     key: []u8,
     value: []u8,
 
-    record_size_in_bytes: usize = 0,
+    record_size_in_bytes: usize,
     allocator: *std.mem.Allocator,
 
     const Self = @This();
@@ -71,10 +71,6 @@ pub const Record = struct {
 
     /// total size in bytes of the record
     pub fn bytesLen(self: *Self) usize {
-        if (self.record_size_in_bytes != 0) {
-            return self.record_size_in_bytes;
-        }
-
         // total bytes (usually 8 bytes) to store the total bytes in the entire record
         const record_len_type_len = @sizeOf(RecordLengthType);
 
@@ -148,6 +144,7 @@ pub const Record = struct {
         _ = try reader.readAtLeast(r.value, value_length);
 
         r.allocator = allocator;
+
         _ = r.bytesLen();
 
         return r;
@@ -167,6 +164,10 @@ pub const Record = struct {
             .allocator = self.allocator,
         };
         return p.bytesLen();
+    }
+
+    pub fn debug(self: *Self) void {
+        std.debug.print("Op:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\n", .{ self.op, self.key, self.value, self.record_size_in_bytes });
     }
 };
 
@@ -217,7 +218,7 @@ test "record.toBytesAlloc" {
     try expectEq(buf[0], @intFromEnum(Op.Delete));
 }
 
-test "record.toBytes returns a contiguous array with the record" {
+test "record_toBytes" {
     var alloc = std.testing.allocator;
     var r = try Record.init("hello", "world", Op.Delete, &alloc);
     defer r.deinit();
@@ -231,25 +232,6 @@ test "record.toBytes returns a contiguous array with the record" {
     try expect(!std.mem.eql(u8, buf, "helloworld"));
     try expectEq(@as(usize, 21), r.bytesLen());
     try expectEq(buf[0], @intFromEnum(Op.Delete));
-}
-
-test "record.read_record having an slice, read a record starting at an offset" {
-    // var offset = 0;
-    var record_bytes = [_]u8{
-        0, //Op
-        21, 0, 0, 0, 0, 0, 0, 0, //21 bytes
-        5, 0, //5 bytes of key
-        104, 101, 108, 108, 111, //hello (the key)
-        119, 111, 114, 108, 100, //world (the value)
-    };
-
-    var alloc = std.testing.allocator;
-
-    const r = try Record.fromBytes(record_bytes[0..], &alloc);
-    defer r.deinit();
-
-    try std.testing.expectEqualStrings("hello", r.key);
-    try std.testing.expectEqualStrings("world", r.value);
 }
 
 test "record_fromBytes" {
@@ -270,4 +252,5 @@ test "record_fromBytes" {
 
     try std.testing.expectEqualStrings(r.key, new_r_reader.key);
     try std.testing.expectEqualStrings(r.value, new_r_reader.value);
+    try std.testing.expectEqual(@as(usize, 21), new_r_reader.record_size_in_bytes);
 }
