@@ -39,22 +39,29 @@ pub const Sst = struct {
         var stat = try f.stat();
 
         var data = try allocator.alloc(u8, stat.size);
-        defer allocator.free(data); //delete
-
-        const bytes_read = try f.readAll(data);
-        _ = bytes_read;
-
         const h = try Header.fromBytes(data);
 
-        return Self{
+        var sst = Self{
             .header = h,
             .mem = try allocator.alloc(*Record, h.records_size),
             .pointers = try allocator.alloc(*Pointer, h.records_size),
             .allocator = allocator,
         };
+
+        return sst;
+    }
+
+    pub fn read_file(self: *Self) !void {
+        _ = self;
     }
 
     pub fn deinit(self: *Self) void {
+        for (self.mem) |record| {
+            record.deinit();
+        }
+        for (self.pointers) |p| {
+            p.deinit();
+        }
         self.allocator.free(self.mem);
         self.allocator.free(self.pointers);
     }
@@ -68,7 +75,7 @@ pub const Sst = struct {
 
         // Read records
         while (offset < HeaderPkg.headerSize() + self.header.records_size) {
-            var r = Record.fromBytes(fileBytes[offset..], self.allocator) orelse return offset;
+            var r = try Record.fromBytes(fileBytes[offset..], self.allocator);
             std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
             self.mem[self.current_mem_index] = r;
             self.current_mem_index += 1;
@@ -78,7 +85,7 @@ pub const Sst = struct {
 
         //Read pointers?
         while (offset < fileBytes.len) {
-            var p = try Pointer.fromBytes(fileBytes[offset..]);
+            var p = try Pointer.fromBytes(self.allocator, fileBytes[offset..]);
             self.pointers[self.current_pointer_index] = &p;
             offset += p.bytesLen();
         }
@@ -92,30 +99,26 @@ test "sst_fromBytes" {
     const WalType = @import("./memory_wal.zig").MemoryWal(4098);
 
     var wal = try WalType.init(&allocator);
-    wal.deinit_cascade();
+    defer wal.deinit();
 
     try wal.append(try Record.init("hell0", "world1", Op.Update, &allocator));
     try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
     try wal.append(try Record.init("hell2", "world3", Op.Delete, &allocator));
-    wal.sort();
 
-    const DiskManagerType = DiskManager(WalType);
-    var dm = try DiskManagerType.init("/tmp");
+    var dm = try DiskManager.init("/tmp");
     var filedata = try dm.new_file(&allocator);
-    filedata.deinit();
 
     const bytes_written = try wal.persist(&filedata.file);
 
     std.debug.print("{} bytes written\n", .{bytes_written});
 
-    var sst = try Sst.init(&filedata.file, &allocator);
+    var f = try std.fs.openFileAbsolute(filedata.filename, std.fs.File.OpenFlags{ .mode = .read_only });
+    var sst = try Sst.init(&f, &allocator);
+    filedata.deinit();
     defer sst.deinit();
 
     var buf = try allocator.alloc(u8, bytes_written);
     defer allocator.free(buf);
-
-    try filedata.file.seekTo(0);
-    _ = try filedata.file.readAll(buf);
 
     const bytes_read = try sst.fromBytes(buf);
     std.debug.print("{} bytes read\n", .{bytes_read});

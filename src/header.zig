@@ -53,22 +53,12 @@ pub const Header = struct {
         return headerSize();
     }
 
-    pub fn fromBytes(buf: []u8) !Header {
-        if (buf.len < headerSize()) {
-            return Error.InputArrayTooSmall;
-        }
-
+    pub fn fromReader(reader: anytype) !Header {
         //Magic number
-        var magic = buf[0];
-        var offset: usize = 1;
+        var magic = try reader.readByte();
 
-        // offset of the first key in the "keys" chunk.
-        var first_key = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
-        offset += @sizeOf(usize);
-
-        // offset of the last key in the "keys" chunk.
-        var last_key = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
-        offset += @sizeOf(usize);
+        var first_key = try reader.readIntLittle(usize);
+        var last_key = try reader.readIntLittle(usize);
 
         var header = Header{
             .total_records = 0,
@@ -80,21 +70,23 @@ pub const Header = struct {
         };
 
         // reserved space
-        std.mem.copy(u8, header.reserved[0..], buf[offset .. offset + @sizeOf(@TypeOf(header.reserved))]);
-        offset += @sizeOf(@TypeOf(header.reserved));
+        _ = try reader.readAtLeast(header.reserved[0..], @sizeOf(@TypeOf(header.reserved)));
 
         // total records
-        var total_records = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
-        offset += @sizeOf(usize);
+        var total_records = try reader.readIntLittle(usize);
         header.total_records = total_records;
 
         // Size of the records store, only records without header or pointers
-        var records_size = std.mem.readIntSliceLittle(usize, buf[offset .. offset + @sizeOf(usize)]);
+        var records_size = try reader.readIntLittle(usize);
         header.records_size = records_size;
 
-        offset += @sizeOf(usize);
-
         return header;
+    }
+
+    pub fn fromBytes(buf: []u8) !Header {
+        var readerT = std.io.fixedBufferStream(buf);
+        var reader = readerT.reader();
+        return Header.fromReader(reader);
     }
 };
 
@@ -118,7 +110,7 @@ test "header.fromBytes" {
     };
 
     var alloc = std.testing.allocator;
-    var buf = try alloc.alloc(u8, 512);
+    var buf = try alloc.alloc(u8, headerSize());
     defer alloc.free(buf);
 
     _ = try Header.toBytes(&header, buf);

@@ -48,6 +48,12 @@ pub const Record = struct {
         return s;
     }
 
+    pub fn deinit(self: *Self) void {
+        self.allocator.free(self.key);
+        self.allocator.free(self.value);
+        self.allocator.destroy(self);
+    }
+
     pub fn init_string(key: []const u8, value: []const u8, alloc: *std.mem.Allocator) !*Self {
         return Record.init(key[0..], value[0..], alloc);
     }
@@ -82,12 +88,6 @@ pub const Record = struct {
     //  1 + 8               + 1          + 8          + 1
     pub fn minimum_size() usize {
         return 1 + @sizeOf(KeyLengthType) + 1 + @sizeOf(RecordLengthType) + 1;
-    }
-
-    pub fn deinit(self: *Self) void {
-        self.allocator.free(self.key);
-        self.allocator.free(self.value);
-        self.allocator.destroy(self);
     }
 
     /// TODO Update comment. Writes into the provided buf the data of the record in a contiguous array as described
@@ -126,41 +126,37 @@ pub const Record = struct {
         return buf;
     }
 
-    pub fn fromBytes(buf: []u8, allocator: *std.mem.Allocator) ?*Record {
-        // Check if there's enough data to read the record size
-        if (buf.len < @sizeOf(RecordLengthType)) {
-            return null;
-        }
-        var offset: usize = 0;
+    pub fn fromBytesReader(allocator: *std.mem.Allocator, reader: anytype) !*Record {
+        var r = try allocator.create(Self);
 
-        var op = @as(Op, @enumFromInt(buf[offset]));
-        offset += 1;
+        r.op = @as(Op, @enumFromInt(try reader.readByte()));
 
         //Read the record length bytes (4 or 8 usually) to get the total length of the record
-        const bytes_for_record_length = buf[offset .. offset + @sizeOf(RecordLengthType)];
-        const record_length = std.mem.readIntSliceLittle(RecordLengthType, bytes_for_record_length);
-        offset += @sizeOf(RecordLengthType);
-
-        // check if the buffer actually has the amount of bytes that the record_length says
-        if (buf.len < record_length) {
-            return null;
-        }
+        const record_length = try reader.readIntLittle(RecordLengthType);
 
         // read the key length
-        const bytes_for_key_length = buf[offset .. offset + @sizeOf(KeyLengthType)];
-        const key_length = std.mem.readIntSliceLittle(KeyLengthType, bytes_for_key_length);
-        offset += @sizeOf(u16);
+        const key_length = try reader.readIntLittle(KeyLengthType);
+        r.key = try allocator.alloc(u8, key_length);
 
         // read the key
-        const key = buf[offset .. offset + key_length];
-        offset += key_length;
+        _ = try reader.readAtLeast(r.key, key_length);
 
-        // read as many bytes as left to get the value
-        const value_length = record_length - bytes_for_key_length.len - key_length - @sizeOf(RecordLengthType) - 1;
-        const value = buf[offset .. offset + value_length];
+        // read as many bytes as are left to get the value
+        const value_length = record_length - @sizeOf(KeyLengthType) - key_length - @sizeOf(RecordLengthType) - 1;
 
-        var r = Record.init(key, value, op, allocator) catch return null;
+        r.value = try allocator.alloc(u8, value_length);
+        _ = try reader.readAtLeast(r.value, value_length);
+
+        r.allocator = allocator;
+        _ = r.bytesLen();
+
         return r;
+    }
+
+    pub fn fromBytes(buf: []u8, allocator: *std.mem.Allocator) !*Record {
+        var fixedReader = std.io.fixedBufferStream(buf);
+        var reader = fixedReader.reader();
+        return Record.fromBytesReader(allocator, reader);
     }
 
     pub fn expectedPointerSize(self: *Record) usize {
@@ -168,6 +164,7 @@ pub const Record = struct {
             .key = self.key,
             .op = Op.Create,
             .byte_offset = 0,
+            .allocator = self.allocator,
         };
         return p.bytesLen();
     }
@@ -248,21 +245,29 @@ test "record.read_record having an slice, read a record starting at an offset" {
 
     var alloc = std.testing.allocator;
 
-    const r = Record.fromBytes(record_bytes[0..], &alloc).?;
+    const r = try Record.fromBytes(record_bytes[0..], &alloc);
     defer r.deinit();
 
     try std.testing.expectEqualStrings("hello", r.key);
     try std.testing.expectEqualStrings("world", r.value);
+}
 
-    // return none if there's not enough data for a record in the buffer
-    // starting from 20, there's not enough data to read a potential record size
-    const r2 = Record.fromBytes(record_bytes[20..], &alloc);
+test "record_fromBytes" {
+    var alloc = std.testing.allocator;
 
-    try expect(r2 == null);
+    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    defer r.deinit();
 
-    // return none in case of some corruption where I can read the record
-    // size but there's not enough data. For example if record size says that
-    // the record has 30 bytes but the buffer actually has 10
-    const r3 = Record.fromBytes(record_bytes[0..10], &alloc);
-    try expect(r3 == null);
+    var buf = try alloc.alloc(u8, r.bytesLen());
+    defer alloc.free(buf);
+
+    _ = try Record.toBytes(r, buf);
+    var fixedReader = std.io.fixedBufferStream(buf);
+    var reader = fixedReader.reader();
+
+    var new_r_reader = try Record.fromBytesReader(&alloc, reader);
+    defer new_r_reader.deinit();
+
+    try std.testing.expectEqualStrings(r.key, new_r_reader.key);
+    try std.testing.expectEqualStrings(r.value, new_r_reader.value);
 }

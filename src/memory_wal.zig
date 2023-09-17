@@ -53,17 +53,12 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 
         // Frees the array that contains the Records but leaving them untouched
         pub fn deinit(self: *Self) void {
-            self.allocator.free(self.mem);
-            self.allocator.destroy(self);
-        }
-
-        // Frees the array that contains the Records and the Records themselves.
-        pub fn deinit_cascade(self: *Self) void {
             var iter = self.iterator();
             while (iter.next()) |r| {
                 r.deinit();
             }
-            self.deinit();
+            self.allocator.free(self.mem);
+            self.allocator.destroy(self);
         }
 
         pub fn appendKv(self: *Self, k: []const u8, v: []const u8) WalError!void {
@@ -169,6 +164,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
                     .op = record.op,
                     .key = record.key,
                     .byte_offset = tail_offset,
+                    .allocator = self.allocator,
                 };
 
                 bytes_written = try pointer_.toBytesWriter(writer);
@@ -225,7 +221,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 
             // Read records
             while (offset < HeaderPkg.headerSize() + self.recordsSize()) {
-                var r = Record.fromBytes(fileBytes[offset..], self.allocator) orelse return offset;
+                var r = try Record.fromBytes(fileBytes[offset..], self.allocator);
                 // std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
                 self.mem[self.current_mem_index] = r;
                 self.current_mem_index += 1;
@@ -292,7 +288,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 test "wal.iterator backwards" {
     var alloc = std.testing.allocator;
     var wal = try MemoryWal(100).init(&alloc);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     try wal.append(try Record.init("hell0", "world", Op.Create, &alloc));
     try wal.append(try Record.init("hell1", "world", Op.Create, &alloc));
@@ -308,7 +304,7 @@ test "wal.iterator backwards" {
 test "wal.iterator" {
     var alloc = std.testing.allocator;
     var wal = try MemoryWal(100).init(&alloc);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     try wal.append(try Record.init("hell0", "world", Op.Create, &alloc));
     try wal.append(try Record.init("hell1", "world", Op.Create, &alloc));
@@ -340,7 +336,7 @@ test "wal.sort a wal" {
     var alloc = std.testing.allocator;
 
     var wal = try MemoryWal(100).init(&alloc);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     var r1 = try Record.init("hellos", "world", Op.Create, &alloc);
     var r2 = try Record.init("hello", "world", Op.Create, &alloc);
@@ -361,7 +357,7 @@ test "wal.add record" {
     var alloc = std.testing.allocator;
 
     var wal = try MemoryWal(100).init(&alloc);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     var r = try Record.init("hello", "world", Op.Create, &alloc);
     try wal.append(r);
@@ -377,7 +373,7 @@ test "wal.max size reached" {
     var alloc = std.testing.allocator;
 
     var wal = try MemoryWal(23).init(&alloc);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     try std.testing.expectEqual(@as(usize, 1), wal.mem.len);
     var r = try Record.init("hello", "world", Op.Create, &alloc);
@@ -397,7 +393,7 @@ test "wal.max size reached" {
 test "wal.find a key" {
     var alloc = std.testing.allocator;
     var wal = try MemoryWal(100).init(&alloc);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     var r1 = try Record.init("hello", "world", Op.Create, &alloc);
     var r2 = try Record.init("hello", "world1", Op.Create, &alloc);
@@ -428,7 +424,7 @@ test "wal.persist" {
     const WalType = MemoryWal(4098);
 
     var wal = try WalType.init(&allocator);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     var r = try Record.init("hell0", "world1", Op.Delete, &allocator);
     try wal.append(r);
@@ -442,8 +438,7 @@ test "wal.persist" {
     try expectEqual(@as(usize, 161), HeaderPkg.headerSize());
     try expectEqual(@as(usize, 16), r.expectedPointerSize());
 
-    const DiskManagerType = DiskManager(WalType);
-    var dm = try DiskManagerType.init("/tmp");
+    var dm = try DiskManager.init("/tmp");
     var fileData = try dm.new_file(&allocator);
     defer fileData.deinit();
 
@@ -470,7 +465,7 @@ test "wal_fromBytes" {
     const WalType = MemoryWal(4098);
 
     var wal = try WalType.init(&allocator);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     try wal.append(try Record.init("hell0", "world1", Op.Update, &allocator));
     try wal.append(try Record.init("hell1", "world2", Op.Delete, &allocator));
@@ -484,7 +479,7 @@ test "wal_fromBytes" {
     try expectEqual(@as(usize, 227), bytes_written);
 
     var wal2 = try WalType.init(&allocator);
-    defer wal2.deinit_cascade();
+    defer wal2.deinit();
 
     const bytes_read = try wal2.fromBytes(buf[0..bytes_written]);
     try expectEqual(@as(usize, 227), bytes_read);
@@ -506,9 +501,9 @@ test "wal.toBytes" {
 
     const bytes_written = try wal.toBytes(buf);
 
-    wal.deinit_cascade();
+    wal.deinit();
     wal = try WalType.init(&allocator);
-    defer wal.deinit_cascade();
+    defer wal.deinit();
 
     const bytes_read = try wal.fromBytes(buf[0..bytes_written]);
     try expectEqual(@as(usize, 227), bytes_read);
