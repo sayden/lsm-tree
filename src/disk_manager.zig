@@ -127,9 +127,9 @@ pub const DiskManager = struct {
     }
 
     // FREE the returned value
-    fn get_files(_: *Self, alloc: *std.mem.Allocator) ![]std.fs.IterableDir.Entry {
+    fn get_files(self: *Self, alloc: std.mem.Allocator) ![]std.fs.IterableDir.Entry {
         // Read every file from self.folder_path
-        var dirIterator = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
+        var dirIterator = try std.fs.openIterableDirAbsolute(self.folder_path, .{ .no_follow = true });
         defer dirIterator.close();
 
         var iterator = dirIterator.iterate();
@@ -140,15 +140,14 @@ pub const DiskManager = struct {
                 index += 1;
             }
         }
-        dirIterator.close();
 
         var kinds = try alloc.alloc(std.fs.IterableDir.Entry, index);
 
         // Restart the operation
-        dirIterator = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
-        defer dirIterator.close();
+        var dirIterator2 = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
+        defer dirIterator2.close();
 
-        iterator = dirIterator.iterate();
+        iterator = dirIterator2.iterate();
         index = 0;
 
         while (try iterator.next()) |item| {
@@ -161,3 +160,17 @@ pub const DiskManager = struct {
         return kinds;
     }
 };
+
+test "disk_manager_get_files" {
+    var allocator = std.testing.allocator;
+
+    var out_buffer = try allocator.alloc(u8, 128);
+    defer allocator.free(out_buffer);
+    var path = try std.fs.cwd().realpath("./testing", out_buffer);
+
+    var dm = try DiskManager.init(path);
+
+    var files = try dm.get_files(allocator);
+
+    defer allocator.free(files);
+}

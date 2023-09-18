@@ -14,7 +14,7 @@ pub const Pointer = struct {
     op: Op,
     key: []u8,
     byte_offset: usize = 0,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
@@ -73,7 +73,7 @@ pub const Pointer = struct {
         return self.bytesLen();
     }
 
-    pub fn fromBytesReader(allocator: *std.mem.Allocator, reader: anytype) !*Pointer {
+    pub fn fromBytesReader(allocator: std.mem.Allocator, reader: anytype) !*Pointer {
         var p = try allocator.create(Pointer);
 
         //Op
@@ -96,7 +96,7 @@ pub const Pointer = struct {
     // Reads the provided array and return a Pointer from the contents. If the contents of the array
     // are not correct, it will return a corrupted Pointer.
     // The size of this array is expected to be X + 11 being X the key length
-    pub fn fromBytes(allocator: *std.mem.Allocator, bytes: []u8) !*Pointer {
+    pub fn fromBytes(allocator: std.mem.Allocator, bytes: []u8) !*Pointer {
         var fixedReader = std.io.fixedBufferStream(bytes);
         var reader = fixedReader.reader();
         return Pointer.fromBytesReader(allocator, reader);
@@ -112,7 +112,7 @@ test "pointer_bytesLen" {
         .op = Op.Create,
         .key = hello,
         .byte_offset = 100,
-        .allocator = &allocator,
+        .allocator = allocator,
     };
     defer allocator.free(p.key);
 
@@ -129,7 +129,7 @@ test "pointer_toBytes" {
         .op = Op.Create,
         .key = hello,
         .byte_offset = 100, // char d
-        .allocator = &allocator,
+        .allocator = allocator,
     };
     defer allocator.free(p.key);
 
@@ -155,7 +155,7 @@ test "pointer_fromBytes" {
     var p = Pointer{
         .op = Op.Create,
         .key = key,
-        .allocator = &allocator,
+        .allocator = allocator,
         .byte_offset = 100,
     };
     defer allocator.free(p.key);
@@ -163,7 +163,7 @@ test "pointer_fromBytes" {
     var buf = try p.toBytesAlloc(&allocator);
     defer allocator.free(buf);
 
-    var p2 = try Pointer.fromBytes(&allocator, buf);
+    var p2 = try Pointer.fromBytes(allocator, buf);
     defer p2.deinit();
 
     const eq = std.testing.expectEqual;

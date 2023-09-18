@@ -2,6 +2,10 @@ const std = @import("std");
 const clap = @import("./pkg/zig-clap/clap.zig");
 const Header = @import("./header.zig").Header;
 
+pub fn println(s: []const u8) void {
+    std.debug.print("{s}\n", .{s});
+}
+
 pub fn main() !void {
     // First we specify what parameters our program can take.
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`

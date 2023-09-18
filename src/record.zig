@@ -24,12 +24,12 @@ pub const Record = struct {
     value: []u8,
 
     record_size_in_bytes: usize,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     const Self = @This();
 
     /// Call deinit() to deallocate this struct and its values
-    pub fn init(key: []const u8, value: []const u8, op: Op, alloc: *std.mem.Allocator) !*Self {
+    pub fn init(key: []const u8, value: []const u8, op: Op, alloc: std.mem.Allocator) !*Self {
         var s = try alloc.create(Self);
 
         s.op = op;
@@ -122,7 +122,7 @@ pub const Record = struct {
         return buf;
     }
 
-    pub fn fromBytesReader(allocator: *std.mem.Allocator, reader: anytype) !*Record {
+    pub fn fromBytesReader(allocator: std.mem.Allocator, reader: anytype) !*Record {
         var r = try allocator.create(Self);
 
         r.op = @as(Op, @enumFromInt(try reader.readByte()));
@@ -173,7 +173,7 @@ pub const Record = struct {
 
 test "record.expected pointer size" {
     var alloc = std.testing.allocator;
-    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
     var size = Record.expectedPointerSize(r);
     try std.testing.expectEqual(@as(usize, 16), size);
@@ -181,7 +181,7 @@ test "record.expected pointer size" {
 
 test "record.init" {
     var alloc = std.testing.allocator;
-    var r = try Record.init("hell0", "world1", Op.Update, &alloc);
+    var r = try Record.init("hell0", "world1", Op.Update, alloc);
     defer r.deinit();
 
     try expectEq(@as(usize, 22), r.record_size_in_bytes);
@@ -195,7 +195,7 @@ test "record.init" {
 
 test "record.size" {
     var alloc = std.testing.allocator;
-    var r = try Record.init("hello", "world", Op.Create, &alloc);
+    var r = try Record.init("hello", "world", Op.Create, alloc);
     defer r.deinit();
 
     const size = r.bytesLen();
@@ -207,7 +207,7 @@ test "record.minimum size" {
 }
 test "record.toBytesAlloc" {
     var alloc = std.testing.allocator;
-    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
     var buf = try Record.toBytesAlloc(r, &alloc);
@@ -220,7 +220,7 @@ test "record.toBytesAlloc" {
 
 test "record_toBytes" {
     var alloc = std.testing.allocator;
-    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
     var buf = try alloc.alloc(u8, r.bytesLen());
@@ -237,7 +237,7 @@ test "record_toBytes" {
 test "record_fromBytes" {
     var alloc = std.testing.allocator;
 
-    var r = try Record.init("hello", "world", Op.Delete, &alloc);
+    var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
     var buf = try alloc.alloc(u8, r.bytesLen());
@@ -247,7 +247,7 @@ test "record_fromBytes" {
     var fixedReader = std.io.fixedBufferStream(buf);
     var reader = fixedReader.reader();
 
-    var new_r_reader = try Record.fromBytesReader(&alloc, reader);
+    var new_r_reader = try Record.fromBytesReader(alloc, reader);
     defer new_r_reader.deinit();
 
     try std.testing.expectEqualStrings(r.key, new_r_reader.key);

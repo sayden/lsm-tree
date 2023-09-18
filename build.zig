@@ -15,8 +15,11 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable("lsmtree", "src/main.zig");
     const root = Pkg{ .name = "lsmtree", .path = .{ .path = "src/main.zig" } };
+    const strings = Pkg{ .name = "strings", .path = .{ .path = "src/pkg/strings/strings.zig" } };
     const serialize = Pkg{ .name = "serialize", .path = .{ .path = "src/serialize/main.zig" }, .dependencies = &[_]Pkg{root} };
+    exe.addPackage(strings);
     exe.addPackage(serialize);
+
     exe.setTarget(target);
     exe.setBuildMode(mode);
     pkgs.addAllTo(exe);
