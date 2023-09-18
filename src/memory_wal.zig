@@ -87,7 +87,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         pub fn find(self: *Self, key_to_find: []const u8) ?*Record {
             var iter = self.backwards_iterator();
             while (iter.next()) |r| {
-                if (std.mem.eql(u8, r.key, key_to_find)) {
+                if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
                     return r;
                 }
             }
@@ -120,54 +120,38 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         ///
         /// Format is as following:
         /// Header
-        /// Record
-        /// Record
-        /// Record
+        /// Pointer
+        /// Pointer
+        /// Pointer
         /// ...
-        /// Pointer
-        /// Pointer
-        /// Pointer
+        /// Record
+        /// Record
+        /// Record
         /// ...
         /// EOF
-        pub fn toBytesWriter(self: *Self, writer: anytype) !usize {
-            var iter = self.iterator();
-
-            var record_total_bytes: usize = 0;
-            _ = record_total_bytes;
-
-            // Write the header
-            _ = try self.header.toBytesWriter(writer);
-
-            // Write only records
-            while (iter.next()) |record| {
-                _ = try record.toBytesWriter(writer);
-            }
-
-            return writer.context.getPos();
-        }
-
-        pub fn persistV2(self: *Self, file: *std.fs.File) !usize {
+        pub fn persist(self: *Self, file: *std.fs.File) !usize {
             try file.seekTo(HeaderPkg.headerSize());
             var writer = file.writer();
 
-            // Write the header
-            // _ = try self.header.toBytesWriter(writer);
+            var offset = HeaderPkg.headerSize() + self.pointers_size;
+
+            for (0..self.header.total_records) |i| {
+                self.mem[i].pointer.offset = offset;
+                _ = try self.mem[i].writePointer(writer);
+                offset += self.mem[i].bytesLen();
+            }
 
             // Each record value must be stored sequentially now
             // their offset must be stored later, in pointers
             for (0..self.header.total_records) |i| {
-                var offset = try self.mem[i].writeValue(writer);
-                self.mem[i].offset = offset;
-            }
-
-            for (0..self.header.total_records) |i| {
-                _ = try self.mem[i].writeKey(writer);
+                self.mem[i].pointer.offset = offset;
+                offset = try self.mem[i].writeValue(writer);
             }
 
             var written = writer.context.getEndPos();
 
-            self.header.first_pointer_offset = self.mem[0].offset;
-            self.header.last_pointer_offset = self.mem[self.header.total_records - 1].offset;
+            self.header.first_pointer_offset = self.mem[0].getOffset();
+            self.header.last_pointer_offset = self.mem[self.header.total_records - 1].getOffset();
 
             // Write the header
             try file.seekTo(0);
@@ -175,52 +159,6 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             _ = try self.header.toBytesWriter(writer2);
 
             return written;
-        }
-
-        pub fn persist(self: *Self, file: *std.fs.File) !usize {
-            var writer = file.writer();
-
-            // Headers and records are written
-            var written = try self.toBytesWriter(writer);
-            var bytes_written: usize = 0;
-
-            var iter = self.iterator();
-            var tail_offset = written;
-
-            // Write pointers now
-            while (iter.next()) |record| {
-                // pointer
-                var pointer_ = Pointer{
-                    .op = record.op,
-                    .key = record.key,
-                    .byte_offset = tail_offset,
-                    .allocator = self.allocator,
-                };
-
-                bytes_written = try pointer_.toBytesWriter(writer);
-                tail_offset += bytes_written;
-                written += bytes_written;
-            }
-
-            self.header.last_pointer_offset = tail_offset - bytes_written;
-
-            try file.seekTo(0);
-            var headerBuf = try self.allocator.alloc(u8, HeaderPkg.headerSize());
-            defer self.allocator.free(headerBuf);
-            _ = try self.header.toBytes(headerBuf);
-            _ = try file.write(headerBuf);
-
-            file.sync() catch |err| {
-                std.debug.print("Error syncing file: {}\n", .{err});
-            };
-
-            return written;
-        }
-
-        pub fn toBytes(self: *Self, buf: []u8) !usize {
-            var writerType = std.io.fixedBufferStream(buf);
-            var writer = writerType.writer();
-            return self.toBytesWriter(writer);
         }
 
         fn recordsSize(self: *Self) usize {
@@ -234,14 +172,14 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         }
 
         fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
-            const smaller_size: usize = if (lhs.key.len > rhs.key.len) rhs.key.len else lhs.key.len;
+            const smaller_size: usize = if (lhs.pointer.key.len > rhs.pointer.key.len) rhs.pointer.key.len else lhs.pointer.key.len;
 
             var i: usize = 0;
             while (i < smaller_size) {
-                if (lhs.key[i] == rhs.key[i]) {
+                if (lhs.pointer.key[i] == rhs.pointer.key[i]) {
                     i += 1;
                     continue;
-                } else if (lhs.key[i] > rhs.key[i]) {
+                } else if (lhs.pointer.key[i] > rhs.pointer.key[i]) {
                     return false;
                 } else {
                     return true;
@@ -249,28 +187,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             }
 
             // if all chars were equal, return shortest as true
-            return (lhs.key.len < rhs.key.len);
-        }
-
-        pub fn fromBytes(self: *Self, fileBytes: []u8) !usize {
-            var fixedReader = std.io.fixedBufferStream(fileBytes);
-            var reader = fixedReader.reader();
-            return self.fromBytesReader(reader);
-        }
-
-        pub fn fromBytesReader(self: *Self, reader: anytype) !usize {
-            // Read header
-            self.header = try Header.fromReader(reader);
-
-            // Read records
-            for (0..self.header.total_records) |_| {
-                var r = try Record.fromBytesReader(self.allocator, reader);
-                self.mem[self.current_mem_index] = r;
-                self.current_mem_index += 1;
-            }
-
-            // WAL files does not have pointers
-            return reader.context.getPos();
+            return (lhs.pointer.key.len < rhs.pointer.key.len);
         }
 
         const RecordIterator = struct {
@@ -336,8 +253,8 @@ test "wal_iterator backwards" {
 
     var iter = wal.backwards_iterator();
 
-    var next = iter.next().?;
-    try std.testing.expectEqualStrings("world0", next.value.?);
+    var next = iter.next();
+    try std.testing.expectEqualStrings("world0", next.?.value);
 }
 
 test "wal_iterator" {
@@ -352,11 +269,11 @@ test "wal_iterator" {
 
     var iter = wal.iterator();
 
-    _ = iter.next().?;
-    _ = iter.next().?;
-    _ = iter.next().?;
-    var record = iter.next().?;
-    try std.testing.expectEqualStrings("world0", record.value.?);
+    _ = iter.next();
+    _ = iter.next();
+    _ = iter.next();
+    var record = iter.next();
+    try std.testing.expectEqualStrings("world0", record.?.value);
 }
 
 test "wal_lexicographical_compare" {
@@ -383,13 +300,13 @@ test "wal_sort" {
     try wal.append(r1);
     try wal.append(r2);
 
-    try std.testing.expectEqualSlices(u8, wal.mem[0].key, r1.key);
-    try std.testing.expectEqualSlices(u8, wal.mem[1].key, r2.key);
+    try std.testing.expectEqualSlices(u8, wal.mem[0].pointer.key, r1.pointer.key);
+    try std.testing.expectEqualSlices(u8, wal.mem[1].pointer.key, r2.pointer.key);
 
     wal.sort();
 
-    try std.testing.expectEqualSlices(u8, wal.mem[1].key, r1.key);
-    try std.testing.expectEqualSlices(u8, wal.mem[0].key, r2.key);
+    try std.testing.expectEqualSlices(u8, wal.mem[1].pointer.key, r1.pointer.key);
+    try std.testing.expectEqualSlices(u8, wal.mem[0].pointer.key, r2.pointer.key);
 }
 
 test "wal_add_record" {
@@ -406,27 +323,6 @@ test "wal_add_record" {
 
     try wal.appendKv("hello2", "world2");
     try std.testing.expect(wal.header.total_records == 2);
-}
-
-test "wal_max_size_reached" {
-    var alloc = std.testing.allocator;
-
-    var wal = try MemoryWal(23).init(alloc);
-    defer wal.deinit();
-
-    try std.testing.expectEqual(@as(usize, 2), wal.mem.len);
-    var r = try Record.init("hello", "world", Op.Create, alloc);
-
-    try std.testing.expectEqual(@as(usize, 14), r.bytesLen());
-
-    wal.append(r) catch unreachable;
-
-    var buf: [24]u8 = undefined;
-    _ = try Record.toBytes(r, buf[0..]);
-
-    if (wal.append(r)) |_| unreachable else |err| {
-        try std.testing.expect(err == WalError.MaxSizeReached);
-    }
 }
 
 test "wal_find_a_key" {
@@ -446,9 +342,9 @@ test "wal_find_a_key" {
 
     try std.testing.expect(wal.header.total_records == 4);
 
-    const maybe_record = wal.find(r1.key[0..]);
+    const maybe_record = wal.find(r1.getKey());
     //we expect value of r3 as it's the last inserted using key `hello`
-    try std.testing.expect(std.mem.eql(u8, maybe_record.?.value.?, r3.value.?[0..]));
+    try std.testing.expect(std.mem.eql(u8, maybe_record.?.value, r3.value[0..]));
 
     const unkonwn_record = wal.find("unknokwn");
     try std.testing.expect(unkonwn_record == null);
@@ -458,128 +354,25 @@ test "wal_size_on_memory" {
     try std.testing.expectEqual(224, @sizeOf(MemoryWal(100)));
 }
 
-// test "wal_persist" {
-//     var allocator = std.testing.allocator;
-//     const WalType = MemoryWal(4098);
-
-//     var wal = try WalType.init(allocator);
-//     defer wal.deinit();
-
-//     var r = try Record.init("hell0", "world1", Op.Delete, allocator);
-//     try wal.append(r);
-//     try wal.append(try Record.init("hell1", "world2", Op.Delete, allocator));
-//     try wal.append(try Record.init("hell2", "world3", Op.Delete, allocator));
-//     wal.sort();
-
-//     try expectEqual(@as(usize, 15), r.bytesLen());
-//     try expectEqual(@as(usize, 66), wal.header.records_size);
-//     try expectEqual(@as(usize, 3), wal.header.total_records);
-//     try expectEqual(@as(usize, 161), HeaderPkg.headerSize());
-//     try expectEqual(@as(usize, 16), r.expectedPointerSize());
-
-//     var dm = try DiskManager.init("/tmp");
-//     var fileData = try dm.new_file(&allocator);
-//     defer fileData.deinit();
-
-//     try expectEqual(@as(usize, 66), (r.bytesLen() * 3));
-//     try expectEqual(@as(usize, 48), (3 * r.expectedPointerSize()));
-//     try expectEqual(@as(usize, 275), HeaderPkg.headerSize() + (r.bytesLen() * 3) + (3 * r.expectedPointerSize()));
-
-//     const bytes_written = try wal.persist(&fileData.file);
-
-//     try expectEqual(@as(usize, HeaderPkg.headerSize() + (r.bytesLen() * 3) + (3 * r.expectedPointerSize())), bytes_written);
-
-//     try fileData.file.seekTo(0);
-//     const file = try std.fs.openFileAbsolute(fileData.filename, std.fs.File.OpenFlags{});
-//     defer file.close();
-
-//     var headerBuf: [HeaderPkg.headerSize()]u8 = undefined;
-//     _ = try file.read(&headerBuf);
-
-//     try std.fs.deleteFileAbsolute(fileData.filename);
-// }
-
-// test "wal_fromBytes" {
-//     var allocator = std.testing.allocator;
-//     const WalType = MemoryWal(4098);
-
-//     var wal = try WalType.init(allocator);
-//     defer wal.deinit();
-
-//     try wal.append(try Record.init("hell0", "world1", Op.Update, allocator));
-//     try wal.append(try Record.init("hell1", "world2", Op.Delete, allocator));
-//     try wal.append(try Record.init("hell2", "world3", Op.Delete, allocator));
-
-//     var buf = try allocator.alloc(u8, 4096);
-//     defer allocator.free(buf);
-
-//     const bytes_written: usize = try wal.toBytes(buf);
-
-//     try expectEqual(@as(usize, 227), bytes_written);
-
-//     var wal2 = try WalType.init(allocator);
-//     defer wal2.deinit();
-
-//     var fixedReader = std.io.fixedBufferStream(buf[0..bytes_written]);
-//     var reader = fixedReader.reader();
-//     const bytes_read = try wal2.fromBytesReader(reader);
-//     try expectEqual(@as(usize, 227), bytes_read);
-// }
-
-// test "wal_toBytes" {
-//     var allocator = std.testing.allocator;
-//     const WalType = MemoryWal(4098);
-
-//     var wal = try WalType.init(allocator);
-
-//     try wal.append(try Record.init("hell0", "world1", Op.Update, allocator));
-//     try wal.append(try Record.init("hell1", "world2", Op.Delete, allocator));
-//     try wal.append(try Record.init("hell2", "world3", Op.Delete, allocator));
-//     wal.sort();
-
-//     var buf = try allocator.alloc(u8, 4096);
-//     defer allocator.free(buf);
-
-//     const bytes_written = try wal.toBytes(buf);
-
-//     wal.deinit();
-//     wal = try WalType.init(allocator);
-//     defer wal.deinit();
-
-//     const bytes_read = try wal.fromBytes(buf[0..bytes_written]);
-//     try expectEqual(@as(usize, 227), bytes_read);
-// }
-
 test "wal_persistv2" {
-    var allocator = std.testing.allocator;
+    var alloc = std.testing.allocator;
     const WalType = MemoryWal(4098);
 
-    var wal = try WalType.init(allocator);
+    var wal = try WalType.init(alloc);
     defer wal.deinit();
 
-    var r = try Record.init("hell0", "world1", Op.Delete, allocator);
-    try wal.append(r);
-    try wal.append(try Record.init("hell1", "world2", Op.Delete, allocator));
-    try wal.append(try Record.init("hell2", "world3", Op.Delete, allocator));
-    wal.sort();
-
-    try expectEqual(@as(usize, 15), r.bytesLen());
-    try expectEqual(@as(usize, 45), wal.header.records_size);
-    try expectEqual(@as(usize, 3), wal.header.total_records);
-    try expectEqual(@as(usize, 161), HeaderPkg.headerSize());
-    try expectEqual(@as(usize, 16), r.expectedPointerSize());
+    var r1 = try Record.init("hello", "world0", Op.Create, alloc);
+    var r2 = try Record.init("hello", "world1", Op.Create, alloc);
+    var r3 = try Record.init("hello", "world3", Op.Create, alloc);
+    try wal.append(r1);
+    try wal.append(r2);
+    try wal.append(r3);
 
     var dm = try DiskManager.init("/tmp");
-    var fileData = try dm.new_file(&allocator);
+    var fileData = try dm.new_file(&alloc);
     defer fileData.deinit();
 
-    try expectEqual(@as(usize, 45), (r.bytesLen() * 3));
-    try expectEqual(@as(usize, 48), (3 * r.expectedPointerSize()));
-    try expectEqual(@as(usize, 254), HeaderPkg.headerSize() + (r.bytesLen() * 3) + (3 * r.expectedPointerSize()));
-
-    const bytes_written = try wal.persistV2(&fileData.file);
-
-    try expectEqual(@as(usize, HeaderPkg.headerSize() + (r.bytesLen() * 3) + (3 * r.expectedPointerSize())), bytes_written);
+    _ = try wal.persist(&fileData.file);
 
     try fileData.file.seekTo(0);
     const file = try std.fs.openFileAbsolute(fileData.filename, std.fs.File.OpenFlags{});
@@ -588,5 +381,5 @@ test "wal_persistv2" {
     var headerBuf: [HeaderPkg.headerSize()]u8 = undefined;
     _ = try file.read(&headerBuf);
 
-    // try std.fs.deleteFileAbsolute(fileData.filename);
+    try std.fs.deleteFileAbsolute(fileData.filename);
 }

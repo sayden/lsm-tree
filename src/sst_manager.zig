@@ -6,38 +6,52 @@ const Pointer = @import("./pointer.zig").Pointer;
 
 pub const SstIndex = struct {
     header: Header,
-    path: []const u8,
     first_key: []u8,
     last_key: []u8,
     f: std.fs.File,
+    pointers: []*Pointer,
     allocator: std.mem.Allocator,
 
     pub fn init(path: []const u8, allocator: std.mem.Allocator) !*SstIndex {
         var f = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
-
         var s = try allocator.create(SstIndex);
         s.f = f;
+
         s.allocator = allocator;
-        s.header = try Header.fromReader(f.reader());
-        s.path = path;
+        var reader = f.reader();
 
-        try f.seekTo(s.header.first_pointer_offset);
-        var p = try Pointer.fromBytesReader(allocator, f.reader());
-        defer p.deinit();
-        s.first_key = try allocator.dupe(u8, p.key);
+        // read header
+        s.header = try Header.fromReader(reader);
 
-        try f.seekTo(s.header.last_pointer_offset);
-        var p1 = try Pointer.fromBytesReader(allocator, f.reader());
-        defer p1.deinit();
-        s.last_key = try allocator.dupe(u8, p1.key);
+        // read pointers
+        s.pointers = try allocator.alloc(*Pointer, s.header.total_records);
+        for (0..s.header.total_records) |i| {
+            var p = try Pointer.read(reader, s.allocator);
+            s.pointers[i] = p;
+        }
+
+        //first and last key
+        s.first_key = s.getPointer(0).?.key;
+        s.last_key = s.getPointer(s.header.total_records - 1).?.key;
 
         return s;
+    }
+
+    fn getPointer(s: *SstIndex, index: usize) ?*Pointer {
+        if (index >= s.header.total_records) {
+            return null;
+        }
+
+        return s.pointers[index];
     }
 
     fn deinit(self: *SstIndex) void {
         self.allocator.free(self.first_key);
         self.allocator.free(self.last_key);
-        self.allocator.free(self.path);
+        for (self.pointers) |p| {
+            p.deinit();
+        }
+        self.allocator.free(self.pointers);
         self.f.close();
         self.allocator.destroy(self);
     }
@@ -68,7 +82,7 @@ pub const SstIndex = struct {
     }
 
     pub fn debug(self: *SstIndex) void {
-        std.debug.print("Path\t{s}\nFirst key\t{s}\nLast key\t{s}\n", .{ self.path, self.first_key, self.last_key });
+        std.debug.print("\nFirst key\t{first_key}\nLast key\t{last_key}\n", self);
     }
 };
 
@@ -84,14 +98,14 @@ test "SstIndex_init" {
     var allocator = std.testing.allocator;
 
     var buf = try allocator.alloc(u8, 50);
-    // defer allocator.free(buf);
+    defer allocator.free(buf);
     var path = try std.fs.cwd().realpath("./testing/example.sst", buf);
 
     var s = try SstIndex.init(path, allocator);
     defer s.deinit();
 
-    try std.testing.expectEqualStrings("hell0", s.first_key);
-    try std.testing.expectEqualStrings("hell2", s.last_key);
+    try std.testing.expectEqualStrings("hello", s.first_key);
+    try std.testing.expectEqualStrings("hello", s.last_key);
 
     var hell1 = try std.fmt.allocPrint(allocator, "hell1", .{});
     defer allocator.free(hell1);
@@ -103,7 +117,7 @@ test "SstIndex_contains" {
     var allocator = std.testing.allocator;
 
     var buf = try allocator.alloc(u8, 50);
-    // defer allocator.free(buf);
+    defer allocator.free(buf);
     var path = try std.fs.cwd().realpath("./testing/example.sst", buf);
 
     var ssti = try SstIndex.init(path, allocator);

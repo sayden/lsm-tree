@@ -103,7 +103,7 @@ pub const DiskManager = struct {
             full_path = try std.fmt.allocPrint(allocator.*, "{s}/{s}.sst", .{ self.folder_path, file_id });
         }
 
-        std.debug.print("Creating file {s}\n", .{full_path});
+        std.debug.print("\nCreating file {s}\n", .{full_path});
 
         var file = try std.fs.createFileAbsolute(full_path, std.fs.File.CreateFlags{});
 

@@ -94,7 +94,7 @@ pub const Header = struct {
         std.debug.print("Header\n------\n", .{});
         std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
         std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });
-        std.debug.print("Reserved: {s}\n\nFirst Record:\n-------------\n", .{h.reserved});
+        std.debug.print("Reserved: {s}\n\n", .{h.reserved});
     }
 };
 
