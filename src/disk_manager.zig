@@ -144,7 +144,7 @@ pub const DiskManager = struct {
         var kinds = try alloc.alloc(std.fs.IterableDir.Entry, index);
 
         // Restart the operation
-        var dirIterator2 = try std.fs.openIterableDirAbsolute("/tmp", .{ .no_follow = true });
+        var dirIterator2 = try std.fs.openIterableDirAbsolute(self.folder_path, .{ .no_follow = true });
         defer dirIterator2.close();
 
         iterator = dirIterator2.iterate();
@@ -171,6 +171,5 @@ test "disk_manager_get_files" {
     var dm = try DiskManager.init(path);
 
     var files = try dm.get_files(allocator);
-
     defer allocator.free(files);
 }

@@ -18,17 +18,15 @@ pub const Sst = struct {
     const Self = @This();
 
     header: Header,
-    allocator: *std.mem.Allocator,
+    allocator: std.mem.Allocator,
 
     mem: []*Record,
     pointers: []*Pointer,
 
-    // first_pointer: *Pointer,
-    // last_pointer: *Pointer,
     current_mem_index: usize = 0,
     current_pointer_index: usize = 0,
 
-    pub fn init(f: *std.fs.File, allocator: *std.mem.Allocator) !*Self {
+    pub fn init(f: *std.fs.File, allocator: std.mem.Allocator) !*Self {
         var s = try allocator.create(Sst);
         s.allocator = allocator;
 
@@ -85,7 +83,6 @@ pub const Sst = struct {
             std.debug.print("Record: key: {s}, value: {s}\n", .{ r.key, r.value });
             self.mem[self.current_mem_index] = r;
             self.current_mem_index += 1;
-            // offset += r.bytesLen();
         }
 
         //Read pointers?
@@ -93,7 +90,6 @@ pub const Sst = struct {
             var p = try Pointer.fromBytesReader(self.allocator, reader);
             self.pointers[self.current_pointer_index] = p;
             self.current_pointer_index += 1;
-            // offset += p.bytesLen();
         }
 
         return reader.context.getPos();
@@ -103,9 +99,9 @@ pub const Sst = struct {
 test "sst_fromBytes" {
     var allocator = std.testing.allocator;
 
-    var f = try std.fs.cwd().openFile("../testing/example.sst", std.fs.File.OpenFlags{ .mode = .read_only });
+    var f = try std.fs.cwd().openFile("./testing/example.sst", std.fs.File.OpenFlags{ .mode = .read_only });
     defer f.close();
 
-    var sst = try Sst.init(&f, &allocator);
+    var sst = try Sst.init(&f, allocator);
     defer sst.deinit();
 }

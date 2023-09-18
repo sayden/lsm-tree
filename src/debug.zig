@@ -1,6 +1,8 @@
 const std = @import("std");
 const clap = @import("./pkg/zig-clap/clap.zig");
-const Header = @import("./header.zig").Header;
+const HeaderPkg = @import("./header.zig");
+const Header = HeaderPkg.Header;
+const Record = @import("./record.zig").Record;
 
 pub fn println(s: []const u8) void {
     std.debug.print("{s}\n", .{s});
@@ -56,7 +58,12 @@ pub fn main() !void {
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     var allocator = gpa.allocator();
-    var r = try @import("./record.zig").Record.fromBytesReader(&allocator, reader);
+    try f.seekTo(HeaderPkg.headerSize() + h.records_size);
+    var reader2 = f.reader();
+    var r = try Record.readKey(reader2, allocator);
     defer r.deinit();
-    r.str();
+
+    try f.seekTo(r.offset);
+    _ = try r.readValue(f.reader(), allocator);
+    r.debug();
 }
