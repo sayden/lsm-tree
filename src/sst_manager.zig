@@ -1,15 +1,27 @@
 const std = @import("std");
 const Header = @import("./header.zig").Header;
 const Strings = @import("strings").String;
-const println = @import("./debug.zig").println;
+
 const Pointer = @import("./pointer.zig").Pointer;
+const Sst = @import("./sst.zig").Sst;
+const RecordPkg = @import("./record.zig");
+const Record = RecordPkg.Record;
+const strcmp = @import("./strings.zig").strcmp;
+
+const Debug = @import("./debug.zig");
+const println = Debug.println;
+const prints = Debug.prints;
+const print = std.debug.print;
 
 pub const SstIndex = struct {
     header: Header,
+
     first_key: []u8,
     last_key: []u8,
+
     f: std.fs.File,
     pointers: []*Pointer,
+
     allocator: std.mem.Allocator,
 
     pub fn init(path: []const u8, allocator: std.mem.Allocator) !*SstIndex {
@@ -31,21 +43,13 @@ pub const SstIndex = struct {
         }
 
         //first and last key
-        s.first_key = s.getPointer(0).?.key;
-        s.last_key = s.getPointer(s.header.total_records - 1).?.key;
+        s.first_key = try allocator.dupe(u8, s.getPointer(0).?.key);
+        s.last_key = try allocator.dupe(u8, s.getPointer(s.header.total_records - 1).?.key);
 
         return s;
     }
 
-    fn getPointer(s: *SstIndex, index: usize) ?*Pointer {
-        if (index >= s.header.total_records) {
-            return null;
-        }
-
-        return s.pointers[index];
-    }
-
-    fn deinit(self: *SstIndex) void {
+    pub fn deinit(self: *SstIndex) void {
         self.allocator.free(self.first_key);
         self.allocator.free(self.last_key);
         for (self.pointers) |p| {
@@ -56,29 +60,39 @@ pub const SstIndex = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn getPointer(s: *SstIndex, index: usize) ?*Pointer {
+        if (index >= s.header.total_records) {
+            return null;
+        }
+
+        return s.pointers[index];
+    }
+
+    pub fn load(s: *SstIndex) !*Sst {
+        return Sst.tinitWithIndex(s, s.allocator);
+    }
+
+    pub fn find(idx: *SstIndex, key: []u8) !?Record {
+        if (!idx.IsBetween(key)) return null;
+
+        var p: *Pointer = undefined;
+        _ = p;
+    }
+
     // checks if key is in the range of keys of this sst
-    pub fn isIn(self: *SstIndex, key: []u8) bool {
-        var isInside: bool = false;
-        _ = isInside;
+    pub fn IsBetween(self: *SstIndex, key: []u8) bool {
+        var res = strcmp(key, self.first_key);
 
-        var isHigher = false;
-        for (self.first_key, 0..) |lower, i| {
-            if (key[i] >= lower) {
-                isHigher = true;
-                break;
-            }
-        }
-        if (!isHigher) return false;
-
-        var isLower = false;
-        for (self.last_key, 0..) |lower, i| {
-            if (key[i] <= lower) {
-                isLower = true;
-                break;
-            }
+        if (res < 0) {
+            return false;
         }
 
-        return isLower;
+        res = strcmp(key, self.last_key);
+        if (res > 0) {
+            return false;
+        }
+
+        return true;
     }
 
     pub fn debug(self: *SstIndex) void {
@@ -110,10 +124,10 @@ test "SstIndex_init" {
     var hell1 = try std.fmt.allocPrint(allocator, "hell1", .{});
     defer allocator.free(hell1);
 
-    try std.testing.expect(s.isIn(hell1));
+    try std.testing.expect(s.IsBetween(hell1));
 }
 
-test "SstIndex_contains" {
+test "SstIndex_between" {
     var allocator = std.testing.allocator;
 
     var buf = try allocator.alloc(u8, 50);
@@ -132,14 +146,16 @@ test "SstIndex_contains" {
     };
 
     var cases = [_]case{
-        .{ .result = true, .case = "agg" },
-        .{ .result = true, .case = "abc" },
+        .{ .result = false, .case = "agg" },
+        .{ .result = false, .case = "abc" },
         .{ .result = false, .case = "zzz" },
         .{ .result = true, .case = "hello" },
+        .{ .result = true, .case = "hellz" },
+        .{ .result = false, .case = "hel" },
     };
 
     for (cases) |_case| {
         std.mem.copyForwards(u8, data, _case.case);
-        try std.testing.expectEqual(_case.result, ssti.isIn(data));
+        try std.testing.expectEqual(_case.result, ssti.IsBetween(data[0.._case.case.len]));
     }
 }

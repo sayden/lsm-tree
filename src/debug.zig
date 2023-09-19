@@ -4,7 +4,11 @@ const HeaderPkg = @import("./header.zig");
 const Header = HeaderPkg.Header;
 const Record = @import("./record.zig").Record;
 
-pub fn println(s: []const u8) void {
+pub fn println(s: anytype) void {
+    std.debug.print("{}\n", .{s});
+}
+
+pub fn prints(s: anytype) void {
     std.debug.print("{s}\n", .{s});
 }
 

@@ -10,6 +10,8 @@ const Header = HeaderPkg.Header;
 const lsmtree = @import("./main.zig");
 const Pointer = @import("./pointer.zig").Pointer;
 const DiskManager = @import("./disk_manager.zig").DiskManager;
+const Strings = @import("./strings.zig");
+const strcmp = Strings.strcmp;
 
 pub const WalError = error{
     MaxSizeReached,
@@ -172,22 +174,8 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         }
 
         fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
-            const smaller_size: usize = if (lhs.pointer.key.len > rhs.pointer.key.len) rhs.pointer.key.len else lhs.pointer.key.len;
-
-            var i: usize = 0;
-            while (i < smaller_size) {
-                if (lhs.pointer.key[i] == rhs.pointer.key[i]) {
-                    i += 1;
-                    continue;
-                } else if (lhs.pointer.key[i] > rhs.pointer.key[i]) {
-                    return false;
-                } else {
-                    return true;
-                }
-            }
-
-            // if all chars were equal, return shortest as true
-            return (lhs.pointer.key.len < rhs.pointer.key.len);
+            const res = strcmp(lhs.pointer.key, rhs.pointer.key);
+            return res <= 0;
         }
 
         const RecordIterator = struct {
@@ -381,5 +369,10 @@ test "wal_persistv2" {
     var headerBuf: [HeaderPkg.headerSize()]u8 = undefined;
     _ = try file.read(&headerBuf);
 
-    try std.fs.deleteFileAbsolute(fileData.filename);
+    // try std.fs.deleteFileAbsolute(fileData.filename);
+}
+
+test "wal_size" {
+    const wal = MemoryWal(4096);
+    std.debug.print("{}\n", .{@sizeOf(wal)});
 }

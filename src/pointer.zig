@@ -5,6 +5,11 @@ const Op = @import("ops.zig").Op;
 const Error = error{ArrayTooSmall};
 const RecordLengthType = @import("./record.zig").RecordLengthType;
 
+const Debug = @import("./debug.zig");
+const println = Debug.println;
+const prints = Debug.prints;
+const print = std.debug.print;
+
 // A pointer contains an Operation, a key and a offset to find the Value of the record.
 // The pointer is stored as follows:
 // 1 byte: Operation
@@ -36,7 +41,7 @@ pub const Pointer = struct {
         const key_length = @as(KeyLengthType, @truncate(p.key.len));
         try writer.writeIntLittle(KeyLengthType, key_length);
 
-        _ = try writer.writeAll(p.key);
+        _ = try writer.write(p.key[0..key_length]);
 
         _ = try writer.writeIntLittle(usize, p.offset);
 
@@ -140,6 +145,8 @@ test "pointer_write" {
     var p1 = try Pointer.read(reader, allocator);
     defer p1.deinit();
 
+    try expectEqual(@as(usize, 5), p1.key.len);
+    try std.testing.expectEqualSlices(u8, p.key, p1.key);
     try expectEqual(p.offset, p1.offset);
     try expectEqualStrings(p.key, p1.key);
 }
