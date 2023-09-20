@@ -332,7 +332,7 @@ test "wal_persist" {
     var dm = try DiskManager.init(tmp, alloc);
     defer dm.deinit();
 
-    var fileData = try dm.new_file(alloc);
+    var fileData = try dm.getNewFile(alloc);
     defer fileData.deinit();
 
     _ = try wal.persist(&fileData.file);

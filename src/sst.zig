@@ -19,8 +19,10 @@ pub const Sst = struct {
     current_pointer_index: usize = 0,
 
     pub fn init(f: *std.fs.File, allocator: std.mem.Allocator) !*Self {
-        var s = try allocator.create(Sst);
-        s.* = .{};
+        var s: *Self = try allocator.create(Sst);
+        s.index = null;
+        s.current_mem_index = 0;
+        s.current_pointer_index = 0;
 
         s.allocator = allocator;
         var reader = f.reader();
@@ -39,7 +41,7 @@ pub const Sst = struct {
         //read values
         s.mem = try s.allocator.alloc(*Record, s.header.total_records);
         for (0..s.header.total_records) |i| {
-            var r = try pointers[i].readRecord(reader);
+            var r = try pointers[i].readRecord(reader, allocator);
             s.mem[i] = r;
         }
 
@@ -96,7 +98,7 @@ test "sst_readFile" {
     var sst = try Sst.init(&f, allocator);
     defer sst.deinit();
 
-    try expectEqualString("hello", sst.getRecord(0).?.getKey());
-    try expectEqualString("hello", sst.getRecord(1).?.getKey());
-    try expectEqualString("hello", sst.getRecord(2).?.getKey());
+    try expectEqualString("hello0", sst.getRecord(0).?.getKey());
+    try expectEqualString("hello1", sst.getRecord(1).?.getKey());
+    try expectEqualString("hello2", sst.getRecord(2).?.getKey());
 }
