@@ -20,11 +20,7 @@ pub const KeyLengthType: type = u16;
 pub const Record = struct {
     pointer: *Pointer,
 
-    // op: Op = Op.Create,
-
-    // key: []u8,
     value: []u8,
-    // offset: usize = 0,
 
     record_size_in_bytes: usize,
     allocator: std.mem.Allocator,
@@ -33,8 +29,10 @@ pub const Record = struct {
 
     /// Call deinit() to deallocate this struct and its values
     pub fn init(key: []const u8, value: []const u8, op: Op, alloc: std.mem.Allocator) !*Self {
-        var new_record = try alloc.create(Self);
-        var p = try alloc.create(Pointer);
+        var new_record: *Record = try alloc.create(Self);
+
+        var p: *Pointer = try alloc.create(Pointer);
+
         p.allocator = alloc;
 
         new_record.pointer = p;
@@ -208,7 +206,7 @@ test "record_write_readValues" {
     try std.testing.expectEqualStrings(r.pointer.key, pointer.key);
     try std.testing.expectEqual(@as(usize, 100), pointer.offset);
 
-    var r1 = try pointer.readRecord(reader);
+    var r1 = try pointer.readRecord(reader, alloc);
     defer r1.deinit();
 
     try std.testing.expectEqualStrings(r.value, r1.value);

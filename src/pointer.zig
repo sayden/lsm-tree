@@ -69,8 +69,8 @@ pub const Pointer = struct {
         return p;
     }
 
-    pub fn readRecord(p: *Pointer, reader: anytype) !*Record {
-        var r = try p.allocator.create(Record);
+    pub fn readRecord(p: *Pointer, reader: anytype, alloc: std.mem.Allocator) !*Record {
+        var r = try alloc.create(Record);
 
         p.op = @as(Op, @enumFromInt(try reader.readByte()));
 
@@ -80,15 +80,25 @@ pub const Pointer = struct {
         // read as many bytes as are left to get the value
         const value_length = record_length - @sizeOf(RecordLengthType) - 1;
 
-        r.value = try p.allocator.alloc(u8, value_length);
+        r.value = try alloc.alloc(u8, value_length);
         _ = try reader.readAtLeast(r.value, value_length);
 
-        r.allocator = p.allocator;
+        r.allocator = alloc;
         r.pointer = p;
 
         _ = r.bytesLen();
 
         return r;
+    }
+
+    pub fn clone(self: Self, alloc: std.mem.Allocator) !*Pointer {
+        var p: *Pointer = try alloc.create(Pointer);
+        p.op = self.op;
+        p.key = try alloc.dupe(u8, self.key);
+        p.offset = self.offset;
+        p.allocator = alloc;
+
+        return p;
     }
 
     pub fn bytesLen(self: *Self) usize {

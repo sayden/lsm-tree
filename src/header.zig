@@ -90,7 +90,7 @@ pub const Header = struct {
         return Header.fromReader(reader);
     }
 
-    pub fn debug(h: *Header) void {
+    pub fn debug(h: *const Header) void {
         std.debug.print("Header\n------\n", .{});
         std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
         std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });

@@ -9,7 +9,7 @@ pub fn println(s: anytype) void {
 }
 
 pub fn prints(s: anytype) void {
-    std.debug.print("{s}\n", .{s});
+    std.debug.print("'{s}'\n", .{s});
 }
 
 pub fn main() !void {
@@ -40,10 +40,6 @@ pub fn main() !void {
 
     if (res.args.help != 0)
         std.debug.print("--help\n", .{});
-    // if (res.args.header) |e|
-    //     bytes = e;
-    // for (res.args.offset) |o|
-    //     offset = o;
     for (res.positionals) |pos| {
         path = pos;
         break;

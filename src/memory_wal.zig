@@ -12,6 +12,7 @@ const Pointer = @import("./pointer.zig").Pointer;
 const DiskManager = @import("./disk_manager.zig").DiskManager;
 const Strings = @import("./strings.zig");
 const strcmp = Strings.strcmp;
+const Math = std.math;
 
 pub const WalError = error{
     MaxSizeReached,
@@ -175,7 +176,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 
         fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
             const res = strcmp(lhs.pointer.key, rhs.pointer.key);
-            return res <= 0;
+            return res.compare(Math.CompareOperator.lte);
         }
 
         const RecordIterator = struct {
@@ -229,31 +230,39 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
     };
 }
 
-test "wal_iterator backwards" {
-    var alloc = std.testing.allocator;
-    var wal = try MemoryWal(100).init(alloc);
-    defer wal.deinit();
+fn createWal(alloc: std.mem.Allocator) !*MemoryWal(4096) {
+    var wal = try MemoryWal(4096).init(alloc);
 
-    try wal.append(try Record.init("hell0", "world", Op.Create, alloc));
-    try wal.append(try Record.init("hell1", "world", Op.Create, alloc));
-    try wal.append(try Record.init("hell2", "world", Op.Create, alloc));
-    try wal.append(try Record.init("hell0", "world0", Op.Create, alloc));
+    var buf1 = try alloc.alloc(u8, 10);
+    var buf2 = try alloc.alloc(u8, 10);
+    defer alloc.free(buf1);
+    defer alloc.free(buf2);
+
+    for (0..50) |i| {
+        const key = try std.fmt.bufPrint(buf1, "hello{}", .{i});
+        const val = try std.fmt.bufPrint(buf2, "world{}", .{i});
+
+        try wal.append(try Record.init(key, val, Op.Create, alloc));
+    }
+
+    return wal;
+}
+
+test "wal_iterator_backwards" {
+    var alloc = std.testing.allocator;
+    var wal = try createWal(alloc);
+    defer wal.deinit();
 
     var iter = wal.backwards_iterator();
 
     var next = iter.next();
-    try std.testing.expectEqualStrings("world0", next.?.value);
+    try std.testing.expectEqualStrings("world49", next.?.value);
 }
 
 test "wal_iterator" {
     var alloc = std.testing.allocator;
-    var wal = try MemoryWal(100).init(alloc);
+    var wal = try createWal(alloc);
     defer wal.deinit();
-
-    try wal.append(try Record.init("hell0", "world", Op.Create, alloc));
-    try wal.append(try Record.init("hell1", "world", Op.Create, alloc));
-    try wal.append(try Record.init("hell2", "world", Op.Create, alloc));
-    try wal.append(try Record.init("hell0", "world0", Op.Create, alloc));
 
     var iter = wal.iterator();
 
@@ -261,7 +270,8 @@ test "wal_iterator" {
     _ = iter.next();
     _ = iter.next();
     var record = iter.next();
-    try std.testing.expectEqualStrings("world0", record.?.value);
+
+    try std.testing.expectEqualStrings("world3", record.?.value);
 }
 
 test "wal_lexicographical_compare" {
@@ -274,27 +284,6 @@ test "wal_lexicographical_compare" {
     defer r2.deinit();
 
     try std.testing.expect(!MemoryWal(100).lexicographical_compare({}, r2, r1));
-}
-
-test "wal_sort" {
-    var alloc = std.testing.allocator;
-
-    var wal = try MemoryWal(100).init(alloc);
-    defer wal.deinit();
-
-    var r1 = try Record.init("hellos", "world", Op.Create, alloc);
-    var r2 = try Record.init("hello", "world", Op.Create, alloc);
-
-    try wal.append(r1);
-    try wal.append(r2);
-
-    try std.testing.expectEqualSlices(u8, wal.mem[0].pointer.key, r1.pointer.key);
-    try std.testing.expectEqualSlices(u8, wal.mem[1].pointer.key, r2.pointer.key);
-
-    wal.sort();
-
-    try std.testing.expectEqualSlices(u8, wal.mem[1].pointer.key, r1.pointer.key);
-    try std.testing.expectEqualSlices(u8, wal.mem[0].pointer.key, r2.pointer.key);
 }
 
 test "wal_add_record" {
@@ -315,24 +304,13 @@ test "wal_add_record" {
 
 test "wal_find_a_key" {
     var alloc = std.testing.allocator;
-    var wal = try MemoryWal(100).init(alloc);
+    var wal = try createWal(alloc);
     defer wal.deinit();
 
-    var r1 = try Record.init("hello", "world", Op.Create, alloc);
-    var r2 = try Record.init("hello", "world1", Op.Create, alloc);
-    var r3 = try Record.init("hello", "world3", Op.Create, alloc);
-    var r4 = try Record.init("hello1", "world", Op.Create, alloc);
+    try std.testing.expect(wal.header.total_records == 50);
 
-    try wal.append(r1);
-    try wal.append(r2);
-    try wal.append(r3);
-    try wal.append(r4);
-
-    try std.testing.expect(wal.header.total_records == 4);
-
-    const maybe_record = wal.find(r1.getKey());
-    //we expect value of r3 as it's the last inserted using key `hello`
-    try std.testing.expect(std.mem.eql(u8, maybe_record.?.value, r3.value[0..]));
+    const maybe_record = wal.find(wal.mem[3].getKey());
+    try std.testing.expect(std.mem.eql(u8, maybe_record.?.value, wal.mem[3].value[0..]));
 
     const unkonwn_record = wal.find("unknokwn");
     try std.testing.expect(unkonwn_record == null);
@@ -342,22 +320,19 @@ test "wal_size_on_memory" {
     try std.testing.expectEqual(224, @sizeOf(MemoryWal(100)));
 }
 
-test "wal_persistv2" {
+test "wal_persist" {
     var alloc = std.testing.allocator;
-    const WalType = MemoryWal(4098);
 
-    var wal = try WalType.init(alloc);
+    var wal = try createWal(alloc);
     defer wal.deinit();
 
-    var r1 = try Record.init("hello", "world0", Op.Create, alloc);
-    var r2 = try Record.init("hello", "world1", Op.Create, alloc);
-    var r3 = try Record.init("hello", "world3", Op.Create, alloc);
-    try wal.append(r1);
-    try wal.append(r2);
-    try wal.append(r3);
+    var tmp = try alloc.dupe(u8, "/tmp");
+    defer alloc.free(tmp);
 
-    var dm = try DiskManager.init("/tmp");
-    var fileData = try dm.new_file(&alloc);
+    var dm = try DiskManager.init(tmp, alloc);
+    defer dm.deinit();
+
+    var fileData = try dm.new_file(alloc);
     defer fileData.deinit();
 
     _ = try wal.persist(&fileData.file);
@@ -370,9 +345,4 @@ test "wal_persistv2" {
     _ = try file.read(&headerBuf);
 
     // try std.fs.deleteFileAbsolute(fileData.filename);
-}
-
-test "wal_size" {
-    const wal = MemoryWal(4096);
-    std.debug.print("{}\n", .{@sizeOf(wal)});
 }

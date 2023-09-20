@@ -20,6 +20,8 @@ pub const Sst = struct {
 
     pub fn init(f: *std.fs.File, allocator: std.mem.Allocator) !*Self {
         var s = try allocator.create(Sst);
+        s.* = .{};
+
         s.allocator = allocator;
         var reader = f.reader();
 
@@ -66,8 +68,8 @@ pub const Sst = struct {
         //read values
         sst.mem = try sst.allocator.alloc(*Record, sst.header.total_records);
         for (0..index.header.total_records) |i| {
-            try index.f.seekTo(index.getPointer(i).?.offset);
-            var r = try index.pointers[i].readRecord(index.f.reader());
+            try index.file.seekTo(index.getPointer(i).?.offset);
+            var r = try index.pointers[i].readRecord(index.file.reader(), alloc);
             sst.mem[i] = r;
         }
 
