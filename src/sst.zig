@@ -34,7 +34,7 @@ pub const Sst = struct {
         var pointers = try allocator.alloc(*Pointer, s.header.total_records);
         defer allocator.free(pointers);
         for (0..s.header.total_records) |i| {
-            var p = try Pointer.read(reader, s.allocator);
+            const p = try Pointer.read(reader, s.allocator);
             pointers[i] = p;
         }
 
@@ -71,7 +71,7 @@ pub const Sst = struct {
         sst.mem = try sst.allocator.alloc(*Record, sst.header.total_records);
         for (0..index.header.total_records) |i| {
             try index.file.seekTo(index.getPointer(i).?.offset);
-            var r = try index.pointers[i].readRecord(index.file.reader(), alloc);
+            var r = try index.pointers[i].readRecord_clone_pointer(index.file.reader(), alloc);
             sst.mem[i] = r;
         }
 

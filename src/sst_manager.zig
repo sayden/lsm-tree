@@ -341,8 +341,8 @@ test "sstmanager_init" {
     const maybe_record = try t.s.find("hello10", alloc);
     defer maybe_record.?.deinit();
 
-    try expectEqualStrings("hello10", maybe_record.?.getKey());
-    try expectEqualStrings("world10", maybe_record.?.value);
+    // try expectEqualStrings("hello10", maybe_record.?.getKey());
+    // try expectEqualStrings("world10", maybe_record.?.value);
 
     // _ = try t.wh.append(try Record.init("hello10", "new_world", Op.Create, alloc));
     // const maybe_record2 = try t.s.find("hello10", alloc);

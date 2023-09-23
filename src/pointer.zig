@@ -24,13 +24,23 @@ pub const Pointer = struct {
 
     const Self = @This();
 
+    pub fn init(key: []const u8, alloc: std.mem.Allocator) !*Self {
+        var p = try alloc.create(Self);
+
+        var key_ = try alloc.alloc(u8, key.len);
+        @memcpy(key_, key);
+        p.key = key_;
+
+        p.offset = 0;
+        p.allocator = alloc;
+        p.op = Op.Create;
+
+        return p;
+    }
+
     pub fn deinit(self: *Self) void {
         self.allocator.free(self.key);
         self.allocator.destroy(self);
-    }
-
-    pub fn keySize(self: *Record) usize {
-        return 1 + @sizeOf(KeyLengthType) + self.key + self.key.len;
     }
 
     pub fn write(p: *Pointer, writer: anytype) !usize {
@@ -69,7 +79,7 @@ pub const Pointer = struct {
         return p;
     }
 
-    pub fn readRecord(p: *Pointer, reader: anytype, alloc: std.mem.Allocator) !*Record {
+    fn read_only_record(p: *Pointer, reader: anytype, alloc: std.mem.Allocator) !*Record {
         var r = try alloc.create(Record);
 
         p.op = @as(Op, @enumFromInt(try reader.readByte()));
@@ -84,9 +94,24 @@ pub const Pointer = struct {
         _ = try reader.readAtLeast(r.value, value_length);
 
         r.allocator = alloc;
+
+        return r;
+    }
+
+    pub fn readRecord_clone_pointer(p: *Pointer, reader: anytype, alloc: std.mem.Allocator) !*Record {
+        var r = try read_only_record(p, reader, alloc);
+        r.pointer = try p.clone(alloc);
+
+        _ = r.len();
+
+        return r;
+    }
+
+    pub fn readRecord(p: *Pointer, reader: anytype, alloc: std.mem.Allocator) !*Record {
+        var r = try read_only_record(p, reader, alloc);
         r.pointer = p;
 
-        _ = r.bytesLen();
+        _ = r.len();
 
         return r;
     }
@@ -104,9 +129,9 @@ pub const Pointer = struct {
         return p;
     }
 
-    pub fn bytesLen(keylen: usize) usize {
+    pub fn len(self: *Self) usize {
         // last usize refers to size of offset field, which is indeed of type 'usize'
-        return 1 + @sizeOf(KeyLengthType) + keylen + @sizeOf(usize);
+        return 1 + @sizeOf(KeyLengthType) + self.key.len + @sizeOf(usize);
     }
 
     pub fn debug(self: *Self) void {
@@ -117,43 +142,75 @@ pub const Pointer = struct {
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-test "pointer_bytesLen" {
-    var allocator = std.testing.allocator;
-    var hello = try allocator.alloc(u8, 5);
-    defer allocator.free(hello);
-    @memcpy(hello, "hello");
+test "pointer_init_deinit" {
+    var alloc = std.testing.allocator;
 
-    var len = Pointer.bytesLen(hello.len);
-    try expectEqual(@as(usize, 16), len);
+    const key = "hello";
+    const p = try Pointer.init(key, alloc);
+    defer p.deinit();
+
+    try expectEqual(@as(usize, 0), p.offset);
+    try expectEqualStrings("hello", p.key);
+    try std.testing.expect(key.ptr != p.key.ptr);
 }
 
-test "pointer_write" {
-    var allocator = std.testing.allocator;
-    var hello = try allocator.alloc(u8, 5);
-    @memcpy(hello, "hello");
+test "pointer_read_write" {
+    var alloc = std.testing.allocator;
 
-    var p = Pointer{
-        .op = Op.Create,
-        .key = hello,
-        .offset = 100,
-        .allocator = allocator,
-    };
-    defer allocator.free(p.key);
+    const p = try Pointer.init("hello", alloc);
+    defer p.deinit();
 
-    var buf = try allocator.alloc(u8, 50);
-    defer allocator.free(buf);
-    var fixedWriter = std.io.fixedBufferStream(buf);
-    var writer = fixedWriter.writer();
+    var buf = try alloc.alloc(u8, p.len());
+    defer alloc.free(buf);
+    var buffer_stream = std.io.fixedBufferStream(buf);
+    var writer = buffer_stream.writer();
 
     _ = try p.write(writer);
 
-    var fixedReader = std.io.fixedBufferStream(buf);
-    var reader = fixedReader.reader();
-    var p1 = try Pointer.read(reader, allocator);
+    try buffer_stream.seekTo(0);
+
+    var p1 = try Pointer.read(buffer_stream.reader(), alloc);
     defer p1.deinit();
 
     try expectEqual(@as(usize, 5), p1.key.len);
     try std.testing.expectEqualSlices(u8, p.key, p1.key);
     try expectEqual(p.offset, p1.offset);
     try expectEqualStrings(p.key, p1.key);
+}
+
+test "pointer_readRecord" {
+    var alloc = std.testing.allocator;
+
+    const p = try Pointer.init("hello", alloc);
+    defer p.deinit();
+
+    const r = try Record.init("hello", "wold", Op.Create, alloc);
+    defer r.deinit();
+
+    var buf = try alloc.alloc(u8, r.len());
+    defer alloc.free(buf);
+
+    var buffer_stream = std.io.fixedBufferStream(buf);
+    var writer = buffer_stream.writer();
+    const bytes_written = try r.writeValue(writer);
+
+    try expectEqual(r.len(), bytes_written);
+
+    try buffer_stream.seekTo(0);
+
+    const r1 = try p.readRecord_clone_pointer(buffer_stream.reader(), alloc);
+    defer r1.deinit();
+
+    try expectEqualStrings(r.getKey(), r1.getKey());
+    try expectEqualStrings(r.value, r1.value);
+    try expectEqual(r.getOffset(), r1.getOffset());
+}
+
+test "pointer_len" {
+    var alloc = std.testing.allocator;
+
+    const p = try Pointer.init("hello", alloc);
+    defer p.deinit();
+
+    try expectEqual(@as(usize, 16), p.len());
 }

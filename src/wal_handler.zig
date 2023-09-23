@@ -65,7 +65,7 @@ pub fn WalHandler(comptime WalType: type) type {
         }
 
         pub fn append(self: *Self, r: *Record) !Result {
-            if (self.hasEnoughCapacity(r.bytesLen())) {
+            if (self.hasEnoughCapacity(r.len())) {
                 try self.current.append(r);
                 return Result.Ok;
             }

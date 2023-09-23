@@ -71,7 +71,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
 
         /// Add a new record to the in memory WAL
         pub fn append(self: *Self, r: *Record) WalError!void {
-            const record_size: usize = r.bytesLen();
+            const record_size: usize = r.len();
 
             // Check if there's available space in the WAL
             if (self.getWalSize() + record_size >= max_size_in_bytes) {
@@ -156,7 +156,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             for (0..self.header.total_records) |i| {
                 self.mem[i].pointer.offset = offset;
                 _ = try self.mem[i].writePointer(writer);
-                offset += self.mem[i].bytesLen();
+                offset += self.mem[i].len();
             }
 
             // Write records
@@ -344,7 +344,7 @@ test "wal_add_record" {
     try wal.append(r);
 
     try std.testing.expect(wal.header.total_records == 1);
-    try std.testing.expect(wal.header.records_size == r.bytesLen());
+    try std.testing.expect(wal.header.records_size == r.len());
 
     try wal.appendKv("hello2", "world2");
     try std.testing.expect(wal.header.total_records == 2);
