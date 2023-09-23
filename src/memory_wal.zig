@@ -176,7 +176,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             // Write the header
             try file.seekTo(0);
             var writer2 = file.writer();
-            _ = try self.header.toBytesWriter(writer2);
+            _ = try self.header.write(writer2);
 
             return written;
         }
@@ -187,12 +187,6 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
 
         fn pointersSize(self: *Self) usize {
             return self.pointers_size;
-        }
-
-        fn writeHeader(self: *Self, file: *std.fs.File) !usize {
-            var header_buf: [HeaderPkg.headerSize()]u8 = undefined;
-            _ = try Header.toBytes(&self.header, &header_buf);
-            return try file.pwrite(&header_buf, 0);
         }
 
         fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {

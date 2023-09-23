@@ -53,7 +53,7 @@ pub const Record = struct {
         self.allocator.destroy(self);
     }
 
-    /// total size in bytes of the record
+    /// Length of the value of the record once written. Pointer length is not computed.
     pub fn len(self: *Self) usize {
         const record_len_type_len = @sizeOf(RecordLengthType);
 
@@ -112,23 +112,12 @@ pub const Record = struct {
 
     pub fn pointerSize(self: *Record) usize {
         return self.pointer.len();
-        // return Pointer.bytesLen(self.getKey().len);
     }
 
     pub fn debug(self: *Self) void {
         std.debug.print("\nOp:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\nOffset:\t{}\n\n", .{ self.pointer.op, self.pointer.key, self.value, self.record_size_in_bytes, self.pointer.offset });
     }
 };
-
-test "record_expected_pointer_size" {
-    var alloc = std.testing.allocator;
-
-    var r = try Record.init("hello", "world", Op.Delete, alloc);
-    defer r.deinit();
-
-    var size = Record.pointerSize(r);
-    try std.testing.expectEqual(@as(usize, 16), size);
-}
 
 test "record_init" {
     var alloc = std.testing.allocator;
@@ -144,14 +133,23 @@ test "record_init" {
     try expectEq(Op.Update, r.pointer.op);
 }
 
-test "record_size" {
+test "record_len" {
     var alloc = std.testing.allocator;
 
-    var r = try Record.init("hello", "world", Op.Create, alloc);
+    const r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
-    const size = r.len();
-    try expectEq(@as(u64, 14), size);
+    try std.testing.expectEqual(@as(usize, 14), r.len());
+}
+
+test "record_pointerSize" {
+    var alloc = std.testing.allocator;
+
+    var r = try Record.init("hello", "world", Op.Delete, alloc);
+    defer r.deinit();
+
+    var size = r.pointerSize();
+    try std.testing.expectEqual(@as(usize, 16), size);
 }
 
 test "record_minimum_size" {
@@ -178,6 +176,7 @@ test "record_write_readValues" {
     try bufferStream.seekTo(0);
     var reader = bufferStream.reader();
 
+    // read pointer to seek the cursor to the point where the record begins.
     var pointer = try Pointer.read(reader, alloc);
     defer pointer.deinit();
 

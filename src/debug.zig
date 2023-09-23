@@ -49,7 +49,7 @@ pub fn main() !void {
     defer f.close();
 
     var reader = f.reader();
-    var h = try Header.fromReader(reader);
+    var h = try Header.read(reader);
 
     std.debug.print("Header\n------\n", .{});
     std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });

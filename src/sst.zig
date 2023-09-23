@@ -28,7 +28,7 @@ pub const Sst = struct {
         var reader = f.reader();
 
         // read header
-        s.header = try Header.fromReader(reader);
+        s.header = try Header.read(reader);
 
         // read pointers
         var pointers = try allocator.alloc(*Pointer, s.header.total_records);

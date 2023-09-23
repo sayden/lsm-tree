@@ -42,7 +42,7 @@ pub const SstIndex = struct {
         var reader = f.reader();
 
         // read header
-        const header = try Header.fromReader(reader);
+        const header = try Header.read(reader);
 
         // read pointers
         var pointers = try alloc.alloc(*Pointer, header.total_records);

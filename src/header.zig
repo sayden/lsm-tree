@@ -33,17 +33,7 @@ pub const Header = struct {
         };
     }
 
-    pub fn toBytes(h: *Header, buf: []u8) !usize {
-        if (buf.len < headerSize()) {
-            return Error.OutputArrayTooSmall;
-        }
-
-        var writerType = std.io.fixedBufferStream(buf);
-        var writer = writerType.writer();
-        return h.toBytesWriter(writer);
-    }
-
-    pub fn toBytesWriter(h: *Header, writer: anytype) !usize {
+    pub fn write(h: *Header, writer: anytype) !usize {
         try writer.writeIntLittle(u8, h.magic_number);
         try writer.writeIntLittle(usize, h.first_pointer_offset);
         try writer.writeIntLittle(usize, h.last_pointer_offset);
@@ -54,7 +44,7 @@ pub const Header = struct {
         return headerSize();
     }
 
-    pub fn fromReader(reader: anytype) !Header {
+    pub fn read(reader: anytype) !Header {
         //Magic number
         var magic = try reader.readByte();
 
@@ -87,7 +77,7 @@ pub const Header = struct {
     pub fn fromBytes(buf: []u8) !Header {
         var readerT = std.io.fixedBufferStream(buf);
         var reader = readerT.reader();
-        return Header.fromReader(reader);
+        return Header.read(reader);
     }
 
     pub fn debug(h: *const Header) void {
@@ -121,9 +111,12 @@ test "header.fromBytes" {
     var buf = try alloc.alloc(u8, headerSize());
     defer alloc.free(buf);
 
-    _ = try Header.toBytes(&header, buf);
+    var bufferStream = std.io.fixedBufferStream(buf);
+    _ = try header.write(bufferStream.writer());
 
-    var new_h = try Header.fromBytes(buf);
+    try bufferStream.seekTo(0);
+
+    var new_h = try Header.read(bufferStream.reader());
     try expectEqual(new_h.magic_number, header.magic_number);
     try expectEqual(header.total_records, new_h.total_records);
     try expectEqual(header.records_size, new_h.records_size);
@@ -147,7 +140,7 @@ test "header.toBytes" {
     var writerType = std.io.fixedBufferStream(buf);
     var writer = writerType.writer();
 
-    _ = try Header.toBytesWriter(&header, writer);
+    _ = try Header.write(&header, writer);
 
     // magic number
     try expectEqual(header.magic_number, buf[0]);
