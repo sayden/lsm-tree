@@ -94,15 +94,19 @@ pub const Pointer = struct {
     pub fn clone(self: Self, alloc: std.mem.Allocator) !*Pointer {
         var p: *Pointer = try alloc.create(Pointer);
         p.op = self.op;
-        p.key = try alloc.dupe(u8, self.key);
+        p.key = alloc.dupe(u8, self.key) catch |err| {
+            alloc.destroy(p);
+            return err;
+        };
         p.offset = self.offset;
         p.allocator = alloc;
 
         return p;
     }
 
-    pub fn bytesLen(self: *Self) usize {
-        return 1 + @sizeOf(KeyLengthType) + self.key.len + @sizeOf(@TypeOf(self.offset));
+    pub fn bytesLen(keylen: usize) usize {
+        // last usize refers to size of offset field, which is indeed of type 'usize'
+        return 1 + @sizeOf(KeyLengthType) + keylen + @sizeOf(usize);
     }
 
     pub fn debug(self: *Self) void {
@@ -116,17 +120,10 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 test "pointer_bytesLen" {
     var allocator = std.testing.allocator;
     var hello = try allocator.alloc(u8, 5);
+    defer allocator.free(hello);
     @memcpy(hello, "hello");
 
-    var p = Pointer{
-        .op = Op.Create,
-        .key = hello,
-        .offset = 100,
-        .allocator = allocator,
-    };
-    defer allocator.free(p.key);
-
-    var len = p.bytesLen();
+    var len = Pointer.bytesLen(hello.len);
     try expectEqual(@as(usize, 16), len);
 }
 

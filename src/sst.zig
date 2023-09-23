@@ -100,5 +100,5 @@ test "sst_readFile" {
 
     try expectEqualString("hello0", sst.getRecord(0).?.getKey());
     try expectEqualString("hello1", sst.getRecord(1).?.getKey());
-    try expectEqualString("hello2", sst.getRecord(2).?.getKey());
+    try expectEqualString("hello10", sst.getRecord(2).?.getKey());
 }

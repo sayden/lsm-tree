@@ -39,4 +39,7 @@ test "strcmp" {
 
     const n4 = strcmp("hello", "helloa");
     try expectEqual(Order.lt, n4);
+
+    const n5 = strcmp("hello10", "hello9");
+    try expectEqual(Order.lt, n5);
 }

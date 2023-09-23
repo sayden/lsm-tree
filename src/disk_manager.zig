@@ -17,12 +17,13 @@ pub const FileData = struct {
 
 /// Tracks the files that belong to the system.
 pub const DiskManager = struct {
-    absolute_path: []u8,
+    const Self = @This();
     alloc: std.mem.Allocator,
 
-    pub fn init(relative: []u8, alloc: std.mem.Allocator) !*DiskManager {
-        std.log.debug("using folder '{s}'\n", .{relative});
+    absolute_path: []const u8,
+    idNumber: u32,
 
+    pub fn init(relative: []const u8, alloc: std.mem.Allocator) !*DiskManager {
         // Create a folder to store data and continue if the folder already exists so it is opened.
         std.os.mkdir(relative, 600) catch |err| {
             _ = switch (err) {
@@ -31,122 +32,145 @@ pub const DiskManager = struct {
             };
         };
 
-        var absolute = try std.fs.cwd().realpathAlloc(alloc, relative);
-
         var dm: *DiskManager = try alloc.create(DiskManager);
-        dm.absolute_path = absolute;
+        dm.absolute_path = try std.fs.cwd().realpathAlloc(alloc, relative);
         dm.alloc = alloc;
+        dm.idNumber = DiskManager.getRandomNumber();
 
         return dm;
     }
 
-    pub fn deinit(self: *DiskManager) void {
-        self.alloc.free(self.absolute_path);
-        self.alloc.destroy(self);
+    pub fn deinit(dm: *Self) void {
+        dm.alloc.free(dm.absolute_path);
+        dm.alloc.destroy(dm);
     }
 
-    // No deallocations are needed.
-    //
-    // Callers must close the file when they are done with it. Unfortunately
-    // there's not "WriterCloser" to return a writer than can be closed so the
-    // concrete File implementation must be returned.
-    pub fn getNewFile(self: *DiskManager, allocator: std.mem.Allocator) !FileData {
+    /// Callers must close the file when they are done with it. Unfortunately
+    /// there's not "WriterCloser" to return a writer than can be closed so the
+    /// concrete File implementation must be returned.
+    /// deinit the returned value when done. It will also close the file
+    pub fn getNewFile(self: *DiskManager, alloc: std.mem.Allocator) !FileData {
+        const filename = try self.getNewFilename(alloc);
+
+        std.debug.print("Creating file {s}\n", .{filename});
+
+        var file = try std.fs.createFileAbsolute(filename, std.fs.File.CreateFlags{});
+
+        return FileData{
+            .file = file,
+            .filename = filename,
+            .alloc = alloc,
+        };
+    }
+
+    fn getNewFilename(dm: *DiskManager, alloc: std.mem.Allocator) ![]const u8 {
         var totalAttempts: usize = 0;
-        var file_id: []u8 = try self.getNewFileID(allocator);
 
-        var full_path: []u8 = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.absolute_path, file_id });
+        var full_path: []const u8 = try dm.getNewFilepath(alloc);
 
-        var file: ?std.fs.File = null;
         while (true) {
-            file = std.fs.openFileAbsolute(full_path, std.fs.File.OpenFlags{}) catch |err| {
+            var file: std.fs.File = std.fs.openFileAbsolute(full_path, std.fs.File.OpenFlags{}) catch |err| {
                 switch (err) {
                     std.fs.File.OpenError.FileNotFound => {
-                        allocator.free(file_id);
-                        break;
+                        return full_path;
                     },
                     else => {
                         std.debug.print("Unknown error {s}.\n{!}\n", .{ full_path, err });
-                        file.?.close();
                         return err;
                     },
                 }
             };
-            file.?.close();
+            file.close();
 
             std.debug.print("File {s} already exists, retrying\n", .{full_path});
 
             if (totalAttempts > 100) {
-                allocator.free(file_id);
-                allocator.free(full_path);
+                alloc.free(full_path);
                 return std.fs.File.OpenError.Unexpected;
             }
 
             totalAttempts += 1;
 
-            allocator.free(file_id);
-            file_id = try self.getNewFileID(allocator);
-
-            allocator.free(full_path);
-            full_path = try std.fmt.allocPrint(allocator, "{s}/{s}.sst", .{ self.absolute_path, file_id });
+            alloc.free(full_path);
+            full_path = try dm.getNewFilepath(alloc);
         }
 
-        std.debug.print("\nCreating file {s}\n", .{full_path});
-
-        var file2 = try std.fs.createFileAbsolute(full_path, std.fs.File.CreateFlags{});
-
-        return FileData{
-            .file = file2,
-            .filename = full_path,
-            .alloc = allocator,
-        };
+        return std.fs.File.OpenError.Unexpected;
     }
 
-    /// It must return a unique numeric id for the file being created. Caller is owner of array response
-    fn getNewFileID(_: *DiskManager, allocator: std.mem.Allocator) ![]u8 {
-        var u64Value: u64 = @as(u64, @intCast(std.time.milliTimestamp()));
+    fn getAbsolutePath(self: *DiskManager) []const u8 {
+        return self.absolute_path;
+    }
 
-        var rnd = RndGen.init(u64Value);
-        var n = rnd.random().int(u32);
+    /// It must return a unique numeric filename for the file being created. Caller is owner of array response
+    fn getNewFilepath(dm: *DiskManager, alloc: std.mem.Allocator) ![]const u8 {
+        var n = dm.getNewFileID();
 
-        var buf = try std.fmt.allocPrint(allocator, "{}", .{n});
+        var buf = try std.fmt.allocPrint(alloc, "{s}/{}.sst", .{ dm.getAbsolutePath(), n });
 
         return buf;
     }
 
-    /// FREE the returned value
-    pub fn getFilenames(self: *DiskManager, alloc: std.mem.Allocator) ![][]u8 {
-        // Read every file from self.folder_path
-        std.debug.print("Reading folder: {s}\n", .{self.absolute_path});
+    /// TODO: FIX this is not working as expected
+    /// It must return a unique numeric id for the file being created. Caller is owner of array response
+    fn getNewFileID(dm: *Self) u32 {
+        const overflow = @addWithOverflow(dm.idNumber, 1);
+        if (overflow[1] == 0) {
+            //all good
+            dm.idNumber += 1;
+        } else {
+            dm.idNumber = DiskManager.getRandomNumber();
+        }
 
-        var dirIterator = try std.fs.openIterableDirAbsolute(self.absolute_path, .{ .no_follow = true });
+        return dm.idNumber;
+    }
+
+    fn getRandomNumber() u32 {
+        var u64Value: u64 = @as(u64, @intCast(std.time.milliTimestamp()));
+
+        var rnd = RndGen.init(u64Value);
+        var n = rnd.random().int(u32);
+        return n;
+    }
+
+    /// FREE the returned value
+    pub fn getFilenames(self: *Self, alloc: std.mem.Allocator) ![][]const u8 {
+        // Read every file from self.folder_path
+        std.debug.print("Reading folder: {s}\n", .{self.getAbsolutePath()});
+
+        var dirIterator = try std.fs.openIterableDirAbsolute(self.getAbsolutePath(), .{ .no_follow = true });
+        defer dirIterator.close();
 
         var iterator = dirIterator.iterate();
 
-        var names = try alloc.alloc([]u8, 64);
+        var names = try alloc.alloc([]const u8, 64);
 
         var i: usize = 0;
-        while (try iterator.next()) |item| : (i += 1) {
+        while (try iterator.next()) |item| {
             if (i % 64 == 0) {
                 _ = alloc.resize(names, names.len + 64);
             }
 
             if (std.mem.eql(u8, item.name[item.name.len - 4 .. item.name.len], ".sst")) {
-                names[i] = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ self.absolute_path, item.name });
+                names[i] = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ self.getAbsolutePath(), item.name });
+                i += 1;
             }
         }
-        dirIterator.close();
 
         _ = alloc.resize(names, i);
-
+        names.len = i;
         return names[0..i];
+    }
+
+    pub fn debug(dm: *Self) void {
+        std.debug.print("\n------------\nDisk Manager\n------------\nAbsolut path:\t{s}\nId Number:\t{}\n\n", .{ dm.getAbsolutePath(), dm.idNumber });
     }
 };
 
 test "disk_manager_get_files" {
     var alloc = std.testing.allocator;
 
-    var folder = try alloc.dupe(u8, "./testing");
-    defer alloc.free(folder);
+    var folder = "./testing";
 
     var dm = try DiskManager.init(folder, alloc);
     defer dm.deinit();
@@ -156,4 +180,31 @@ test "disk_manager_get_files" {
     for (files) |file| {
         alloc.free(file);
     }
+}
+
+test "disk_manager_init" {
+    var alloc = std.testing.allocator;
+
+    var folder = "/tmp";
+
+    var dm = try DiskManager.init(folder, alloc);
+    defer dm.deinit();
+
+    var f = try dm.getNewFile(alloc);
+    defer f.deinit();
+}
+
+test "disk_manager_getNewFile" {
+    var alloc = std.testing.allocator;
+
+    var folder = "/tmp";
+
+    var dm = try DiskManager.init(folder, alloc);
+    defer dm.deinit();
+
+    var fileData = try dm.getNewFile(alloc);
+    defer fileData.deinit();
+
+    var fileData2 = try dm.getNewFile(alloc);
+    defer fileData2.deinit();
 }

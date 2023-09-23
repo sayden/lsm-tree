@@ -19,7 +19,7 @@ pub const WalError = error{
     CantCreateRecord,
 } || RecordError || std.mem.Allocator.Error;
 
-pub fn MemoryWal(comptime size_in_bytes: usize) type {
+pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
     return struct {
         const Self = @This();
 
@@ -42,11 +42,11 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         // CALL `deinitCascade()` if you want also to free all the records
         // stored in it.
         pub fn init(allocator: std.mem.Allocator) !*Self {
-            var wal = try allocator.create(MemoryWal(size_in_bytes));
+            var wal = try allocator.create(MemoryWal(max_size_in_bytes));
 
-            wal.max_size = size_in_bytes;
+            wal.max_size = max_size_in_bytes;
             wal.allocator = allocator;
-            wal.mem = try allocator.alloc(*Record, size_in_bytes / Record.minimum_size());
+            wal.mem = try allocator.alloc(*Record, max_size_in_bytes / Record.minimum_size());
             wal.current_mem_index = 0;
             wal.header = Header.init();
             wal.pointers_size = 0;
@@ -69,12 +69,12 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             try self.append(r);
         }
 
-        // Add a new record in order to the in memory WAL
+        /// Add a new record to the in memory WAL
         pub fn append(self: *Self, r: *Record) WalError!void {
             const record_size: usize = r.bytesLen();
 
             // Check if there's available space in the WAL
-            if ((self.recordsSize() + record_size > size_in_bytes) or (self.header.total_records >= self.mem.len)) {
+            if (self.getWalSize() + record_size >= max_size_in_bytes) {
                 return WalError.MaxSizeReached;
             }
 
@@ -82,7 +82,7 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             self.header.total_records += 1;
             self.header.first_pointer_offset += record_size;
             self.header.records_size += record_size;
-            self.pointers_size += r.expectedPointerSize();
+            self.pointers_size += r.pointerSize();
         }
 
         // Compare the provided key with the ones in memory and
@@ -98,9 +98,17 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             return null;
         }
 
+        pub fn availableBytes(self: *Self) usize {
+            return max_size_in_bytes - self.getWalSize();
+        }
+
         // Sort the list of records in lexicographical order
         pub fn sort(self: *Self) void {
             std.sort.insertion(*Record, self.mem[0..self.header.total_records], {}, lexicographical_compare);
+        }
+
+        pub fn getWalSize(self: *Self) usize {
+            return HeaderPkg.headerSize() + self.recordsSize() + self.pointersSize();
         }
 
         // Creates a forward iterator to go through the wal.
@@ -133,19 +141,25 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
         /// ...
         /// EOF
         pub fn persist(self: *Self, file: *std.fs.File) !usize {
+            if (self.header.total_records == 0) {
+                return 0;
+            }
+            self.sort();
+
             try file.seekTo(HeaderPkg.headerSize());
             var writer = file.writer();
 
+            // Move offset after header, which will be written later
             var offset = HeaderPkg.headerSize() + self.pointers_size;
 
+            // Write pointer
             for (0..self.header.total_records) |i| {
                 self.mem[i].pointer.offset = offset;
                 _ = try self.mem[i].writePointer(writer);
                 offset += self.mem[i].bytesLen();
             }
 
-            // Each record value must be stored sequentially now
-            // their offset must be stored later, in pointers
+            // Write records
             for (0..self.header.total_records) |i| {
                 self.mem[i].pointer.offset = offset;
                 offset = try self.mem[i].writeValue(writer);
@@ -153,6 +167,9 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 
             var written = writer.context.getEndPos();
 
+            // Write first and last pointer in the header. We cannot write this before
+            // because we need to know their offsets after writing. It can be calculated
+            // now, but maybe not later if compression comes in place
             self.header.first_pointer_offset = self.mem[0].getOffset();
             self.header.last_pointer_offset = self.mem[self.header.total_records - 1].getOffset();
 
@@ -166,6 +183,10 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
 
         fn recordsSize(self: *Self) usize {
             return self.header.records_size;
+        }
+
+        fn pointersSize(self: *Self) usize {
+            return self.pointers_size;
         }
 
         fn writeHeader(self: *Self, file: *std.fs.File) !usize {
@@ -206,6 +227,16 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
             finished: bool = false,
 
             pub fn init(records: []*Record) RecordBackwardIterator {
+                const tuple = @subWithOverflow(records.len, 1);
+                if (tuple[1] != 0) {
+                    //empty
+
+                    return RecordBackwardIterator{
+                        .records = records,
+                        .pos = 0,
+                        .finished = true,
+                    };
+                }
                 return RecordBackwardIterator{
                     .records = records,
                     .pos = records.len - 1,
@@ -227,6 +258,19 @@ pub fn MemoryWal(comptime size_in_bytes: usize) type {
                 return r;
             }
         };
+
+        pub fn debug(self: *Self) void {
+            std.debug.print("\n---------------------\n---------------------\nWAL\n---\nMem index:\t{}\nMax Size:\t{}\nPointer size:\t{}\n", .{ self.current_mem_index, self.max_size, self.pointers_size });
+            defer std.debug.print("\n---------------------\n---------------------\n", .{});
+            self.header.debug();
+        }
+
+        pub fn full_debug(self: *Self) void {
+            self.debug();
+            for (self.mem) |record| {
+                record.debug();
+            }
+        }
     };
 }
 
@@ -277,19 +321,23 @@ test "wal_iterator" {
 test "wal_lexicographical_compare" {
     var alloc = std.testing.allocator;
 
-    var r1 = try Record.init("hello", "world", Op.Create, alloc);
-    var r2 = try Record.init("hellos", "world", Op.Create, alloc);
+    var wal = try MemoryWal(2048).init(alloc);
+    defer wal.deinit();
 
-    defer r1.deinit();
-    defer r2.deinit();
-
-    try std.testing.expect(!MemoryWal(100).lexicographical_compare({}, r2, r1));
+    for (0..30) |i| {
+        var key = try std.fmt.allocPrint(alloc, "hello{}", .{i});
+        var val = try std.fmt.allocPrint(alloc, "world{}", .{i});
+        try wal.append(try Record.init(key, val, Op.Create, alloc));
+        alloc.free(key);
+        alloc.free(val);
+    }
+    wal.sort();
 }
 
 test "wal_add_record" {
     var alloc = std.testing.allocator;
 
-    var wal = try MemoryWal(100).init(alloc);
+    var wal = try MemoryWal(512).init(alloc);
     defer wal.deinit();
 
     var r = try Record.init("hello", "world", Op.Create, alloc);
@@ -326,10 +374,7 @@ test "wal_persist" {
     var wal = try createWal(alloc);
     defer wal.deinit();
 
-    var tmp = try alloc.dupe(u8, "/tmp");
-    defer alloc.free(tmp);
-
-    var dm = try DiskManager.init(tmp, alloc);
+    var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
     var fileData = try dm.getNewFile(alloc);
@@ -344,5 +389,5 @@ test "wal_persist" {
     var headerBuf: [HeaderPkg.headerSize()]u8 = undefined;
     _ = try file.read(&headerBuf);
 
-    // try std.fs.deleteFileAbsolute(fileData.filename);
+    try std.fs.deleteFileAbsolute(fileData.filename);
 }

@@ -5,12 +5,16 @@ const Strings = @import("strings").String;
 const Pointer = @import("./pointer.zig").Pointer;
 const Sst = @import("./sst.zig").Sst;
 const RecordPkg = @import("./record.zig");
+const Op = @import("./ops.zig").Op;
 const Record = RecordPkg.Record;
 const strcmp = @import("./strings.zig").strcmp;
 const stringEqual = std.mem.eql;
 const Math = std.math;
 const Order = Math.Order;
 const DiskManager = @import("./disk_manager.zig").DiskManager;
+const WalHandler = @import("./wal_handler.zig").WalHandler;
+const WalResult = @import("./wal_handler.zig").Result;
+const MemoryWal = @import("./memory_wal.zig").MemoryWal;
 
 const Debug = @import("./debug.zig");
 const println = Debug.println;
@@ -28,7 +32,7 @@ pub const SstIndex = struct {
 
     allocator: std.mem.Allocator,
 
-    pub fn init(relative: []u8, alloc: std.mem.Allocator) !*SstIndex {
+    pub fn init(relative: []const u8, alloc: std.mem.Allocator) !*SstIndex {
         var path = try std.fs.cwd().realpathAlloc(alloc, relative);
         defer alloc.free(path);
 
@@ -51,6 +55,7 @@ pub const SstIndex = struct {
         const last_pointer = pointers[pointers.len - 1];
 
         var s = try alloc.create(SstIndex);
+
         s.header = header;
         s.first_pointer = first_pointer;
         s.last_pointer = last_pointer;
@@ -82,13 +87,16 @@ pub const SstIndex = struct {
         return Sst.tinitWithIndex(s, s.allocator);
     }
 
-    pub fn binarySearchFn(_: void, key: []u8, mid_item: *Pointer) std.math.Order {
+    pub fn binarySearchFn(_: void, key: []const u8, mid_item: *Pointer) std.math.Order {
         return strcmp(key, mid_item.key);
     }
 
-    pub fn find(idx: *SstIndex, key: []u8) ?*Pointer {
-        if (!idx.isBetween(key)) return null;
+    pub fn find(idx: *SstIndex, key: []const u8) ?*Pointer {
+        if (!idx.isBetween(key)) {
+            return null;
+        }
 
+        //TODO Fix this binary search that seems to not work
         const i = std.sort.binarySearch(*Pointer, key, idx.pointers, {}, binarySearchFn);
         if (i) |index| {
             return idx.pointers[index];
@@ -97,25 +105,29 @@ pub const SstIndex = struct {
         return null;
     }
 
-    pub fn get(idx: *SstIndex, key: []u8, alloc: std.mem.Allocator) !?*Record {
-        if (!idx.isBetween(key)) return null;
+    pub fn get(idx: *SstIndex, key: []const u8, alloc: std.mem.Allocator) !?*Record {
         const p = idx.find(key);
         if (p) |pointer| {
-            return idx.retrieveRecordFromFile(pointer, alloc);
+            var new_pointer = try pointer.clone(alloc);
+            return idx.retrieveRecordFromFile(new_pointer, alloc) catch |err| {
+                new_pointer.deinit();
+                return err;
+            };
         }
+
         return null;
     }
 
     fn retrieveRecordFromFile(idx: *SstIndex, p: *Pointer, alloc: std.mem.Allocator) !*Record {
         try idx.file.seekTo(p.offset);
         var r = try p.readRecord(idx.file.reader(), alloc);
-        r.pointer = try p.*.clone(alloc);
+        r.pointer = p;
 
         return r;
     }
 
     // checks if key is in the range of keys of this sst
-    pub fn isBetween(self: *SstIndex, key: []u8) bool {
+    pub fn isBetween(self: *SstIndex, key: []const u8) bool {
         return strcmp(key, self.first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
     }
 
@@ -124,87 +136,121 @@ pub const SstIndex = struct {
     }
 };
 
-pub const SstManager = struct {
-    indices: []*SstIndex,
-    first_pointer: ?*Pointer = null,
-    last_pointer: *Pointer,
-    alloc: std.mem.Allocator,
-    disk_manager: *DiskManager,
+pub fn SstManager(comptime WalHandlerType: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn init(relative: []u8, alloc: std.mem.Allocator) !*SstManager {
-        const dm = try DiskManager.init(relative, alloc);
+        wh: *WalHandlerType,
+        disk_manager: *DiskManager,
 
-        const file_entries = try dm.getFilenames(alloc);
-        defer {
-            for (file_entries) |item| {
-                alloc.free(item);
+        indices: []*SstIndex,
+        first_pointer: ?*Pointer = null,
+        last_pointer: *Pointer,
+        alloc: std.mem.Allocator,
+
+        pub fn init(relative: []const u8, wh: *WalHandlerType, dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
+            _ = relative;
+
+            const file_entries = try dm.getFilenames(alloc);
+            defer {
+                for (file_entries) |item| {
+                    alloc.free(item);
+                }
+                alloc.free(file_entries);
             }
-            alloc.free(file_entries);
-        }
 
-        var indices = try alloc.alloc(*SstIndex, file_entries.len);
-        var mng: *SstManager = try alloc.create(SstManager);
-        mng.indices = indices;
-        mng.alloc = alloc;
-        mng.first_pointer = null;
-        mng.disk_manager = dm;
+            var indices = try alloc.alloc(*SstIndex, file_entries.len);
+            var mng: *Self = try alloc.create(Self);
+            mng.indices = indices;
+            mng.alloc = alloc;
+            mng.first_pointer = null;
+            mng.disk_manager = dm;
+            mng.wh = wh;
+            mng.disk_manager = dm;
 
-        for (0..file_entries.len) |i| {
-            var idx = try SstIndex.init(file_entries[i], alloc);
-            if (mng.first_pointer == null) {
-                mng.first_pointer = idx.first_pointer;
-                mng.last_pointer = idx.last_pointer;
-            } else {
-                if (strcmp(idx.first_pointer.key, mng.first_pointer.?.key) == Order.lt) {
+            if (file_entries.len == 0) {
+                return mng;
+            }
+
+            for (0..file_entries.len) |i| {
+                var idx = try SstIndex.init(file_entries[i], alloc);
+                if (mng.first_pointer == null) {
                     mng.first_pointer = idx.first_pointer;
-                }
-
-                if (strcmp(idx.last_pointer.key, mng.last_pointer.key) == Order.gt) {
                     mng.last_pointer = idx.last_pointer;
+                } else {
+                    if (strcmp(idx.first_pointer.key, mng.first_pointer.?.key) == Order.lt) {
+                        mng.first_pointer = idx.first_pointer;
+                    }
+
+                    if (strcmp(idx.last_pointer.key, mng.last_pointer.key) == Order.gt) {
+                        mng.last_pointer = idx.last_pointer;
+                    }
+                }
+                mng.indices[i] = idx;
+            }
+
+            return mng;
+        }
+
+        pub fn deinit(self: *Self) void {
+            for (self.indices) |i| {
+                i.deinit();
+            }
+            self.alloc.free(self.indices);
+            self.alloc.destroy(self);
+        }
+
+        pub fn append(self: *Self, r: *Record) !void {
+            return switch (try self.wh.append(r)) {
+                WalResult.Ok => return,
+                WalResult.WalSwitched => {},
+            };
+        }
+
+        fn getSstIndexFromWal(self: *Self, wal: *MemoryWal) !*SstIndex {
+            var s: *SstIndex = try self.alloc.create(SstIndex);
+            s.allocator = self.alloc;
+            // s.file
+            s.first_pointer = wal.pointers[0];
+            s.last_pointer = wal.pointers[wal.header.total_records - 1];
+            s.header = wal.header;
+        }
+
+        pub fn find(self: *Self, key: []const u8, alloc: std.mem.Allocator) !?*Record {
+            // Check in wal first
+            if (self.wh.find(key)) |record| {
+                return record;
+            }
+
+            if (!self.isBetween(key)) {
+                return null;
+            }
+
+            const idx = self.findIndexForKey(key);
+            if (idx) |index| {
+                return index.get(key, alloc);
+            }
+
+            return null;
+        }
+
+        // checks if key is in the range of keys
+        pub fn isBetween(self: *Self, key: []const u8) bool {
+            return strcmp(key, self.first_pointer.?.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
+        }
+
+        fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
+            for (self.indices) |index| {
+                if (index.isBetween(key)) {
+                    return index;
                 }
             }
-            mng.indices[i] = idx;
+
+            print("Index not found\n", .{});
+            return null;
         }
-
-        return mng;
-    }
-
-    pub fn deinit(self: *SstManager) void {
-        for (self.indices) |i| {
-            i.deinit();
-        }
-        self.alloc.free(self.indices);
-        self.disk_manager.deinit();
-        // self.alloc.destroy(self.disk_manager);
-        self.alloc.destroy(self);
-    }
-
-    pub fn find(self: *SstManager, key: []u8, alloc: std.mem.Allocator) !?*Record {
-        if (!self.isBetween(key)) return null;
-
-        const idx = self.findIndexForKey(key);
-        if (idx) |index| {
-            return index.get(key, alloc);
-        }
-
-        return null;
-    }
-
-    // checks if key is in the range of keys
-    pub fn isBetween(self: *SstManager, key: []u8) bool {
-        return strcmp(key, self.first_pointer.?.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
-    }
-
-    fn findIndexForKey(self: *SstManager, key: []u8) ?*SstIndex {
-        for (self.indices) |index| {
-            if (index.isBetween(key)) {
-                return index;
-            }
-        }
-
-        return null;
-    }
-};
+    };
+}
 
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -235,44 +281,15 @@ fn testCreateIndex(comptime pattern: []const u8, alloc: std.mem.Allocator) !*Sst
     return idx;
 }
 
-test "sstmanager_init" {
+test "sstmanager_retrieve_record" {
     var alloc = std.testing.allocator;
+    var t = try testObj.setup(alloc);
+    defer t.teardown();
 
-    const folder_path = try alloc.dupe(u8, "./testing");
-    defer alloc.free(folder_path);
+    const r = try t.s.find("hello23", alloc);
+    defer r.?.deinit();
 
-    var mng = try SstManager.init(folder_path, alloc);
-    defer mng.deinit();
-
-    var s = try alloc.dupe(u8, "Hello10");
-    defer alloc.free(s);
-
-    const maybe_record = try mng.find(s, alloc);
-    if (maybe_record) |record| {
-        defer record.deinit();
-        try expectEqualStrings("SDFADFS", maybe_record.?.getKey());
-    }
-}
-
-test "sstindex_retrieve_record" {
-    var alloc = std.testing.allocator;
-
-    var path = try alloc.dupe(u8, "./testing/example.sst");
-    defer alloc.free(path);
-
-    var s = try SstIndex.init(path, alloc);
-    defer s.deinit();
-
-    var key = try alloc.dupe(u8, "hello23");
-    defer alloc.free(key);
-
-    const p = s.find(key);
-    // defer p.?.deinit();
-
-    const r = try s.retrieveRecordFromFile(p.?, alloc);
-    defer r.deinit();
-
-    try expectEqualStrings("world23", r.value);
+    try expectEqualStrings("world23", r.?.value);
 }
 
 test "sstindex_binary_search" {
@@ -280,38 +297,64 @@ test "sstindex_binary_search" {
     var idx = try testCreateIndex("Hello{}", alloc);
     defer idx.deinit();
 
-    var key = try alloc.dupe(u8, "Hello15");
-    defer alloc.free(key);
-
-    var maybe_record = idx.find(key);
+    var maybe_record = idx.find("Hello15");
 
     try expectEqualStrings(idx.pointers[15].key, maybe_record.?.key);
 }
 
-test "sstindex_init" {
+const testObj = struct {
+    const WalType = MemoryWal(2048);
+    const WalHandlerType = WalHandler(WalType);
+    const SstManagerType = SstManager(WalHandlerType);
+
+    dm: *DiskManager,
+    wh: *WalHandlerType,
+    s: *SstManagerType,
+
+    fn setup(alloc: std.mem.Allocator) !testObj {
+        var dm = try DiskManager.init("./testing", alloc);
+        var wh = try WalHandlerType.init(dm, alloc);
+        var s = try SstManagerType.init("./testing", wh, dm, alloc);
+
+        return testObj{
+            .dm = dm,
+            .wh = wh,
+            .s = s,
+        };
+    }
+
+    fn teardown(self: *testObj) void {
+        self.s.deinit();
+        self.wh.deinit();
+        self.dm.deinit();
+    }
+};
+
+test "sstmanager_init" {
     var alloc = std.testing.allocator;
-    var path = try alloc.dupe(u8, "./testing/example.sst");
-    defer alloc.free(path);
+    var t = try testObj.setup(alloc);
+    defer t.teardown();
 
-    var s = try SstIndex.init(path, alloc);
-    defer s.deinit();
+    try expectEqualStrings("hello0", t.s.first_pointer.?.key);
+    try expectEqualStrings("hello9", t.s.last_pointer.key);
 
-    try expectEqualStrings("hello0", s.first_pointer.key);
-    try expectEqualStrings("hello49", s.last_pointer.key);
+    const maybe_record = try t.s.find("hello10", alloc);
+    defer maybe_record.?.deinit();
 
-    var hell1 = try std.fmt.allocPrint(alloc, "hello10", .{});
-    defer alloc.free(hell1);
+    try expectEqualStrings("hello10", maybe_record.?.getKey());
+    try expectEqualStrings("world10", maybe_record.?.value);
 
-    try std.testing.expect(s.isBetween(hell1));
+    // _ = try t.wh.append(try Record.init("hello10", "new_world", Op.Create, alloc));
+    // const maybe_record2 = try t.s.find("hello10", alloc);
+    // defer maybe_record2.?.deinit();
+
+    // try expectEqualStrings("new_world", maybe_record2.?.value);
 }
 
-test "sstindex_between" {
+test "sstmanager_isBetween" {
     var alloc = std.testing.allocator;
-    var path = try alloc.dupe(u8, "./testing/example.sst");
-    defer alloc.free(path);
-
-    var ssti = try SstIndex.init(path, alloc);
-    defer ssti.deinit();
+    var t = try testObj.setup(alloc);
+    defer t.teardown();
 
     var data = try alloc.alloc(u8, 10);
     defer alloc.free(data);
@@ -326,12 +369,13 @@ test "sstindex_between" {
         .{ .result = false, .case = "abc" },
         .{ .result = false, .case = "zzz" },
         .{ .result = true, .case = "hello11" },
+        .{ .result = true, .case = "hello10" },
         .{ .result = false, .case = "hellz12" },
         .{ .result = true, .case = "hello40" },
     };
 
     for (cases) |_case| {
         std.mem.copyForwards(u8, data, _case.case);
-        try expectEqual(_case.result, ssti.isBetween(data[0.._case.case.len]));
+        try expectEqual(_case.result, t.s.isBetween(data[0.._case.case.len]));
     }
 }

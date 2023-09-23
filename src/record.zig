@@ -40,10 +40,10 @@ pub const Record = struct {
         new_record.pointer.op = op;
 
         p.key = try alloc.alloc(u8, key.len);
-        std.mem.copy(u8, p.key, key);
+        @memcpy(p.key, key);
 
         new_record.value = try alloc.alloc(u8, value.len);
-        std.mem.copy(u8, new_record.value, value);
+        @memcpy(new_record.value, value);
 
         new_record.allocator = alloc;
         new_record.record_size_in_bytes = 0;
@@ -57,21 +57,6 @@ pub const Record = struct {
         self.allocator.free(self.value);
         self.pointer.deinit();
         self.allocator.destroy(self);
-    }
-
-    pub fn init_string(key: []const u8, value: []const u8, alloc: *std.mem.Allocator) !*Self {
-        return Record.init(key[0..], value[0..], alloc);
-    }
-
-    pub fn valueSize(self: *Self) usize {
-        return self.value.len;
-    }
-
-    /// length of the op + key + the key length type
-    fn totalKeyLen(self: *const Self) usize {
-        // K bytes to store a number that indicates how many bytes the key has
-        const key_length = @sizeOf(KeyLengthType);
-        return 1 + key_length + self.pointer.key.len;
     }
 
     /// total size in bytes of the record
@@ -123,7 +108,7 @@ pub const Record = struct {
         return r;
     }
 
-    pub fn getKey(r: *Record) []u8 {
+    pub fn getKey(r: *Record) []const u8 {
         return r.pointer.key;
     }
 
@@ -131,14 +116,8 @@ pub const Record = struct {
         return r.pointer.offset;
     }
 
-    pub fn expectedPointerSize(self: *Record) usize {
-        var p = Pointer{
-            .key = self.getKey(),
-            .op = Op.Create,
-            .offset = 0,
-            .allocator = self.allocator,
-        };
-        return p.bytesLen();
+    pub fn pointerSize(self: *Record) usize {
+        return Pointer.bytesLen(self.getKey().len);
     }
 
     pub fn debug(self: *Self) void {
@@ -151,7 +130,7 @@ test "record_expected_pointer_size" {
     var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
-    var size = Record.expectedPointerSize(r);
+    var size = Record.pointerSize(r);
     try std.testing.expectEqual(@as(usize, 16), size);
 }
 
@@ -162,7 +141,6 @@ test "record_init" {
 
     try expectEq(@as(usize, 15), r.record_size_in_bytes);
     try expectEq(@as(usize, 15), r.bytesLen());
-    try expectEq(@as(usize, 8), r.totalKeyLen());
 
     try std.testing.expectEqualStrings("hell0", r.pointer.key);
     try std.testing.expectEqualStrings("world1", r.value);
@@ -187,6 +165,7 @@ test "record_write_readValues" {
 
     var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
+
     r.pointer.offset = 100;
 
     var buf = try alloc.alloc(u8, 512);
@@ -209,6 +188,6 @@ test "record_write_readValues" {
     var r1 = try pointer.readRecord(reader, alloc);
     defer r1.deinit();
 
-    try std.testing.expectEqualStrings(r.value, r1.value);
+    try std.testing.expectEqualSlices(u8, r.value, r1.value);
     try std.testing.expectEqual(@as(usize, 14), r1.record_size_in_bytes);
 }
