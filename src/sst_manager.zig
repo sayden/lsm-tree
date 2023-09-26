@@ -23,14 +23,12 @@ const DiskManager = DiskManagerNs.DiskManager;
 const WalHandler = WalHandlerNs.WalHandler;
 const WalResult = WalHandlerNs.Result;
 const MemoryWal = MemoryWalNs.MemoryWal;
+const WalError = MemoryWalNs.Error;
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;
 
-const println = DebugNs.println;
-const printlns = DebugNs.printlns;
-const prints = DebugNs.prints;
-const print = std.debug.print;
+usingnamespace DebugNs;
 
 pub const SstIndex = struct {
     const log = std.log.scoped(.SstIndex);
@@ -138,7 +136,7 @@ pub const SstIndex = struct {
     }
 
     pub fn debug(self: *SstIndex) void {
-        std.debug.print("\nFirst key\t{first_key}\nLast key\t{last_key}\n", self);
+        self.log.debug("\nFirst key\t{first_key}\nLast key\t{last_key}\n", self);
     }
 };
 
@@ -248,6 +246,10 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             }
 
             return null;
+        }
+
+        pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
+            return self.wh.persistCurrent(alloc);
         }
 
         // checks if key is in the range of keys
@@ -386,10 +388,18 @@ test "sstmanager_persist" {
     var t = try testObj.setup(alloc);
     defer t.teardown();
 
+    const res = try t.s.persist(null);
+    // no records, so a null result (no error, no file written) must be returned
+    try std.testing.expect(res == null);
+
     const record = try Record.init("hello", "world", Op.Delete, alloc);
     defer record.deinit();
-    
+
     try t.s.append(record);
 
-    t.s.
+    const maybe_filename = try t.s.persist(alloc);
+    if (maybe_filename) |filename| {
+        defer alloc.free(filename);
+        try std.fs.deleteFileAbsolute(filename);
+    }
 }

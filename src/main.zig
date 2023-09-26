@@ -1,4 +1,5 @@
 const std = @import("std");
+pub const log_level: std.log.Level = .debug;
 
 pub const Pointer = @import("./pointer.zig").Pointer;
 pub const Record = @import("./record.zig").Record;

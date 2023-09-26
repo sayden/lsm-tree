@@ -17,9 +17,10 @@ const println = DebugNs.println;
 const prints = DebugNs.prints;
 const print = std.debug.print;
 
-pub const WalError = error{
+pub const Error = error{
     MaxSizeReached,
     CantCreateRecord,
+    EmptyWal,
 } || RecordError || std.mem.Allocator.Error;
 
 pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
@@ -66,7 +67,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             self.alloc.destroy(self);
         }
 
-        pub fn appendKv(self: *Self, k: []const u8, v: []const u8) WalError!void {
+        pub fn appendKv(self: *Self, k: []const u8, v: []const u8) Error!void {
             var r = try Record.init(k, v, Op.Create, self.alloc);
             errdefer r.deinit();
             return self.appendToNotOwned(r);
@@ -77,7 +78,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
 
             // Check if there's available space in the WAL
             if (self.getWalSize() + record_size >= max_size_in_bytes) {
-                return WalError.MaxSizeReached;
+                return Error.MaxSizeReached;
             }
 
             self.mem[self.header.total_records] = r;
@@ -87,12 +88,12 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         }
 
         /// Add a new record to the in memory WAL
-        pub fn append(self: *Self, r: *Record) WalError!void {
+        pub fn append(self: *Self, r: *Record) Error!void {
             const record_size: usize = r.len();
 
             // Check if there's available space in the WAL
             if (self.getWalSize() + record_size >= max_size_in_bytes) {
-                return WalError.MaxSizeReached;
+                return Error.MaxSizeReached;
             }
 
             self.mem[self.header.total_records] = try r.clone(self.alloc);
@@ -158,8 +159,9 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         /// EOF
         pub fn persist(self: *Self, file: *std.fs.File) !usize {
             if (self.header.total_records == 0) {
-                return 0;
+                return Error.EmptyWal;
             }
+
             self.sort();
 
             // Write first and last pointer in the header. We cannot write this before

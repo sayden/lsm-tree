@@ -4,16 +4,14 @@ const DiskManager = @import("./disk_manager.zig").DiskManager;
 const Op = @import("./ops.zig").Op;
 const FileData = @import("./disk_manager.zig").FileData;
 const PointerNs = @import("./pointer.zig");
+const WalNs = @import("./memory_wal.zig");
 const Pointer = PointerNs.Pointer;
 const PointerError = PointerNs.Error;
+const WalError = WalNs.Error;
 
 pub const Result = enum {
     Ok,
     WalSwitched,
-};
-
-pub const Error = error{
-    EmptyWal,
 };
 
 pub fn WalHandler(comptime WalType: type) type {
@@ -59,17 +57,17 @@ pub fn WalHandler(comptime WalType: type) type {
             self.alloc.destroy(self);
         }
 
-        fn persistCurrent(self: *Self, allocator: ?std.mem.Allocator) ![]const u8 {
-            var filename: ?[]const u8 = null;
+        pub fn persistCurrent(self: *Self, allocator: ?std.mem.Allocator) !?[]const u8 {
             var fileData_or_error = self.persist(self.current);
 
-            if (fileData_or_error) |fileData| {
+            var filename: ?[]const u8 = null;
+            if (fileData_or_error) |*fileData| {
                 if (allocator) |alloc| {
                     filename = try alloc.dupe(u8, fileData.filename);
                 }
                 fileData.deinit();
             } else |err| switch (err) {
-                Error.EmptyWal => {},
+                WalError.EmptyWal => return null,
                 else => {
                     errdefer err;
                     {}
@@ -81,7 +79,7 @@ pub fn WalHandler(comptime WalType: type) type {
 
         fn persist(self: *Self, wal: *WalType) !FileData {
             if (wal.header.total_records == 0) {
-                return Error.EmptyWal;
+                return WalError.EmptyWal;
             }
 
             //Get a new file to persist the wal
