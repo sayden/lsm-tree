@@ -1,16 +1,14 @@
 const std = @import("std");
 const Pointer = @import("./pointer.zig").Pointer;
 const Record = @import("./record.zig").Record;
-const HeaderPkg = @import("./header.zig");
+const HeaderNs = @import("./header.zig");
 const SstIndex = @import("./sst_manager.zig").SstIndex;
 
-const Header = HeaderPkg.Header;
+const Header = HeaderNs.Header;
 
 pub const Sst = struct {
-    const Self = @This();
-
     header: Header,
-    allocator: std.mem.Allocator,
+    alloc: std.mem.Allocator,
 
     mem: []*Record,
     index: ?*SstIndex = null,
@@ -18,64 +16,73 @@ pub const Sst = struct {
     current_mem_index: usize = 0,
     current_pointer_index: usize = 0,
 
-    pub fn init(f: *std.fs.File, allocator: std.mem.Allocator) !*Self {
-        var s: *Self = try allocator.create(Sst);
-        s.index = null;
-        s.current_mem_index = 0;
-        s.current_pointer_index = 0;
+    stored_records: usize,
 
-        s.allocator = allocator;
-        var reader = f.reader();
-
+    pub fn init(f: *std.fs.File, alloc: std.mem.Allocator) !Sst {
         // read header
-        s.header = try Header.read(reader);
+        const header = try Header.read(f);
+
+        // init
+        var pointers = try alloc.alloc(*Pointer, header.total_records);
+        defer alloc.free(pointers);
 
         // read pointers
-        var pointers = try allocator.alloc(*Pointer, s.header.total_records);
-        defer allocator.free(pointers);
-        for (0..s.header.total_records) |i| {
-            const p = try Pointer.read(reader, s.allocator);
-            pointers[i] = p;
+        for (0..header.total_records) |i| {
+            const pointer = try Pointer.read(f, alloc);
+            pointers[i] = pointer;
         }
 
+        var stored_records: usize = 0;
+
+        var mem = try alloc.alloc(*Record, header.total_records);
+        errdefer alloc.free(mem);
+
         //read values
-        s.mem = try s.allocator.alloc(*Record, s.header.total_records);
-        for (0..s.header.total_records) |i| {
-            var r = try pointers[i].readRecord(reader, allocator);
-            s.mem[i] = r;
+        for (0..header.total_records) |i| {
+            var pointer: *Pointer = pointers[i];
+            var r = try pointer.readValueReusePointer(f, alloc);
+            errdefer r.deinit();
+            mem[i] = r;
+            stored_records += 1;
         }
+
+        var s = Sst{
+            .mem = mem,
+            .alloc = alloc,
+            .header = header,
+            .stored_records = stored_records,
+        };
 
         return s;
     }
 
-    pub fn deinit(self: *Self) void {
-        for (self.mem) |record| {
-            record.deinit();
+    pub fn deinit(self: *Sst) void {
+        for (0..self.stored_records) |i| {
+            self.mem[i].deinit();
         }
+        self.alloc.free(self.mem);
 
         if (self.index) |index| {
             index.deinit();
         }
-
-        self.allocator.free(self.mem);
-        self.allocator.destroy(self);
     }
 
     pub fn initWithIndex(index: *SstIndex, alloc: std.mem.Allocator) !*Sst {
-        var sst: *Sst = try alloc.create(Sst);
-        sst.header = index.header;
-        sst.allocator = alloc;
-        sst.index = index;
+        var sst: Sst = Sst{
+            .header = index.header,
+            .alloc = alloc,
+            .mem = try alloc.alloc(*Record, index.header.total_records),
+            .index = index,
+        };
 
         //read values
-        sst.mem = try sst.allocator.alloc(*Record, sst.header.total_records);
         for (0..index.header.total_records) |i| {
             try index.file.seekTo(index.getPointer(i).?.offset);
-            var r = try index.pointers[i].readRecord_clone_pointer(index.file.reader(), alloc);
+            var r = try index.pointers[i].readRecordClonePointer(index.file.reader(), alloc);
             sst.mem[i] = r;
         }
 
-        return sst;
+        return &sst;
     }
 
     pub fn getRecord(sst: *Sst, index: usize) ?*Record {
@@ -85,20 +92,24 @@ pub const Sst = struct {
 
         return sst.mem[index];
     }
+
+    pub fn getIndex(sst: *Sst) ?*SstIndex {
+        return sst.index;
+    }
 };
 
 const expectEqualString = std.testing.expectEqualStrings;
 
 test "sst_readFile" {
-    var allocator = std.testing.allocator;
+    var alloc = std.testing.allocator;
 
-    var f = try std.fs.cwd().openFile("./testing/example.sst", std.fs.File.OpenFlags{ .mode = .read_only });
-    defer f.close();
+    var file = try std.fs.cwd().openFile("./testing/example.sst", std.fs.File.OpenFlags{ .mode = .read_only });
+    defer file.close();
 
-    var sst = try Sst.init(&f, allocator);
+    var sst = try Sst.init(&file, alloc);
     defer sst.deinit();
 
     try expectEqualString("hello0", sst.getRecord(0).?.getKey());
     try expectEqualString("hello1", sst.getRecord(1).?.getKey());
-    try expectEqualString("hello10", sst.getRecord(2).?.getKey());
+    try expectEqualString("hello2", sst.getRecord(2).?.getKey());
 }

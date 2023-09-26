@@ -52,15 +52,16 @@ pub const DiskManager = struct {
     pub fn getNewFile(self: *DiskManager, alloc: std.mem.Allocator) !FileData {
         const filename = try self.getNewFilename(alloc);
 
-        std.debug.print("Creating file {s}\n", .{filename});
+        std.debug.print("[DM] Creating file {s}\n", .{filename});
 
-        var file = try std.fs.createFileAbsolute(filename, std.fs.File.CreateFlags{});
+        var file = try std.fs.createFileAbsolute(filename, std.fs.File.CreateFlags{ .read = true }); //adding reading for tests
 
-        return FileData{
+        var fileData = FileData{
             .file = file,
             .filename = filename,
             .alloc = alloc,
         };
+        return fileData;
     }
 
     fn getNewFilename(dm: *DiskManager, alloc: std.mem.Allocator) ![]const u8 {
@@ -75,14 +76,14 @@ pub const DiskManager = struct {
                         return full_path;
                     },
                     else => {
-                        std.debug.print("Unknown error {s}.\n{!}\n", .{ full_path, err });
+                        std.debug.print("[DM] Unknown error {s}.\n{!}\n", .{ full_path, err });
                         return err;
                     },
                 }
             };
             file.close();
 
-            std.debug.print("File {s} already exists, retrying\n", .{full_path});
+            std.debug.print("[DM] File {s} already exists, retrying\n", .{full_path});
 
             if (totalAttempts > 100) {
                 alloc.free(full_path);
@@ -136,7 +137,7 @@ pub const DiskManager = struct {
     /// FREE the returned value
     pub fn getFilenames(self: *Self, alloc: std.mem.Allocator) ![][]const u8 {
         // Read every file from self.folder_path
-        std.debug.print("Reading folder: {s}\n", .{self.getAbsolutePath()});
+        std.debug.print("[DM] Reading folder: {s}\n", .{self.getAbsolutePath()});
 
         var dirIterator = try std.fs.openIterableDirAbsolute(self.getAbsolutePath(), .{ .no_follow = true });
         defer dirIterator.close();
@@ -146,13 +147,14 @@ pub const DiskManager = struct {
         var names = try alloc.alloc([]const u8, 64);
 
         var i: usize = 0;
+        const absolute_path = self.getAbsolutePath();
         while (try iterator.next()) |item| {
             if (i % 64 == 0) {
                 _ = alloc.resize(names, names.len + 64);
             }
 
             if (std.mem.eql(u8, item.name[item.name.len - 4 .. item.name.len], ".sst")) {
-                names[i] = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ self.getAbsolutePath(), item.name });
+                names[i] = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ absolute_path, item.name });
                 i += 1;
             }
         }
@@ -204,7 +206,10 @@ test "disk_manager_getNewFile" {
 
     var fileData = try dm.getNewFile(alloc);
     defer fileData.deinit();
+    try std.fs.deleteFileAbsolute(fileData.filename);
 
     var fileData2 = try dm.getNewFile(alloc);
     defer fileData2.deinit();
+
+    return std.fs.deleteFileAbsolute(fileData2.filename);
 }

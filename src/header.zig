@@ -19,32 +19,37 @@ pub const Header = struct {
 
     //keys offsets
     reserved: [128]u8 = undefined,
-    first_pointer_offset: usize,
-    last_pointer_offset: usize,
-    records_size: usize,
+    last_pointer_offset: usize = 0,
+    first_pointer_offset: usize = 0,
+    records_size: usize = 0,
+
+    // Pointer size must be pre-calculated before persisting because the header is the first
+    // thing written on files. Changing header to EOF would fix this problem
+    pointers_size: usize = 0,
 
     pub fn init() Header {
         // last key cannot be computed yet
         return Header{
-            .reserved = undefined,
             .first_pointer_offset = headerSize(),
-            .records_size = 0,
-            .last_pointer_offset = 0,
         };
     }
 
-    pub fn write(h: *Header, writer: anytype) !usize {
+    pub fn write(h: *Header, file: *std.fs.File) !usize {
+        var writer = file.writer();
         try writer.writeIntLittle(u8, h.magic_number);
-        try writer.writeIntLittle(usize, h.first_pointer_offset);
+        try writer.writeIntLittle(usize, headerSize());
         try writer.writeIntLittle(usize, h.last_pointer_offset);
         _ = try writer.write(&h.reserved);
         try writer.writeIntLittle(usize, h.total_records);
         try writer.writeIntLittle(usize, h.records_size);
+        try writer.writeIntLittle(usize, h.pointers_size);
 
         return headerSize();
     }
 
-    pub fn read(reader: anytype) !Header {
+    pub fn read(file: *std.fs.File) !Header {
+        var reader = file.reader();
+
         //Magic number
         var magic = try reader.readByte();
 
@@ -58,10 +63,11 @@ pub const Header = struct {
             .first_pointer_offset = first_key,
             .magic_number = magic,
             .records_size = 0,
+            .pointers_size = 0,
         };
 
         // reserved space
-        _ = try reader.readAtLeast(header.reserved[0..], @sizeOf(@TypeOf(header.reserved)));
+        _ = try reader.readAtLeast(&header.reserved, @sizeOf(@TypeOf(header.reserved)));
 
         // total records
         var total_records = try reader.readIntLittle(usize);
@@ -71,89 +77,54 @@ pub const Header = struct {
         var records_size = try reader.readIntLittle(usize);
         header.records_size = records_size;
 
-        return header;
-    }
+        // Size of the pointers space
+        var pointers_size = try reader.readIntLittle(usize);
+        header.pointers_size = pointers_size;
 
-    pub fn fromBytes(buf: []u8) !Header {
-        var readerT = std.io.fixedBufferStream(buf);
-        var reader = readerT.reader();
-        return Header.read(reader);
+        return header;
     }
 
     pub fn debug(h: *const Header) void {
         std.debug.print("\n------\nHeader\n------\n", .{});
         std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
-        std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });
+        std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\nPointers size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size, h.pointers_size });
         std.debug.print("Reserved: {s}\n\n", .{h.reserved});
     }
 };
 
 pub fn headerSize() usize {
-    // magic number + usize*3 + 128 for the reserved space
-    return @sizeOf(u8) + 128 + (@sizeOf(usize) * 4);
+    return @sizeOf(u8) + 128 + (@sizeOf(usize) * 5);
 }
 
 test "Header.size" {
     const size = @sizeOf(Header);
-    try std.testing.expectEqual(168, size);
-    try std.testing.expectEqual(@as(usize, 161), headerSize());
+    try std.testing.expectEqual(176, size);
+    try std.testing.expectEqual(@as(usize, 169), headerSize());
 }
 
-test "header.fromBytes" {
+test "header_write_read" {
     var header = Header{
         .total_records = 10,
         .last_pointer_offset = 48,
-        .first_pointer_offset = 40,
+        .first_pointer_offset = headerSize(),
         .records_size = 99,
     };
 
-    var alloc = std.testing.allocator;
-    var buf = try alloc.alloc(u8, headerSize());
-    defer alloc.free(buf);
+    // Create a temp file
+    var tmp_dir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{});
+    defer tmp_dir.cleanup();
 
-    var bufferStream = std.io.fixedBufferStream(buf);
-    _ = try header.write(bufferStream.writer());
+    var file = try tmp_dir.dir.createFile("test.sst", std.fs.File.CreateFlags{ .read = true });
+    defer file.close();
 
-    try bufferStream.seekTo(0);
+    _ = try header.write(&file);
+    try file.seekTo(0);
 
-    var new_h = try Header.read(bufferStream.reader());
+    var new_h = try Header.read(&file);
     try expectEqual(new_h.magic_number, header.magic_number);
     try expectEqual(header.total_records, new_h.total_records);
     try expectEqual(header.records_size, new_h.records_size);
     try expectEqual(new_h.reserved, header.reserved);
     try expectEqual(new_h.last_pointer_offset, header.last_pointer_offset);
     try expectEqual(new_h.first_pointer_offset, header.first_pointer_offset);
-}
-
-test "header.toBytes" {
-    var header = Header{
-        .records_size = 99,
-        .total_records = 10,
-        .last_pointer_offset = 48,
-        .first_pointer_offset = 40,
-    };
-
-    var alloc = std.testing.allocator;
-    var buf = try alloc.alloc(u8, 512);
-    defer alloc.free(buf);
-
-    var writerType = std.io.fixedBufferStream(buf);
-    var writer = writerType.writer();
-
-    _ = try Header.write(&header, writer);
-
-    // magic number
-    try expectEqual(header.magic_number, buf[0]);
-
-    //first key
-    try expectEqual(header.first_pointer_offset, buf[1]);
-
-    // last key
-    try expectEqual(header.last_pointer_offset, buf[9]);
-
-    // total records
-    try expectEqual(header.total_records, buf[145]);
-
-    // record size
-    try expectEqual(header.records_size, buf[153]);
 }

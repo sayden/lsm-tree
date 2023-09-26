@@ -1,11 +1,16 @@
 const std = @import("std");
 const clap = @import("./pkg/zig-clap/clap.zig");
-const HeaderPkg = @import("./header.zig");
-const Header = HeaderPkg.Header;
+const HeaderNs = @import("./header.zig");
+const Header = HeaderNs.Header;
 const Record = @import("./record.zig").Record;
+const Pointer = @import("./pointer.zig").Pointer;
 
 pub fn println(s: anytype) void {
     std.debug.print("{}\n", .{s});
+}
+
+pub fn printlns(s: anytype) void {
+    std.debug.print("{s}\n", .{s});
 }
 
 pub fn prints(s: anytype) void {
@@ -45,25 +50,27 @@ pub fn main() !void {
         break;
     }
 
-    var f = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{ .mode = .read_only });
-    defer f.close();
+    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+    var alloc = gpa.allocator();
 
-    var reader = f.reader();
-    var h = try Header.read(reader);
+    var buf = try alloc.alloc(u8, 500);
+    defer alloc.free(buf);
 
-    std.debug.print("Header\n------\n", .{});
+    const abs_path = try std.fs.cwd().realpath(path, buf);
+    var file = try std.fs.openFileAbsolute(abs_path, std.fs.File.OpenFlags{ .mode = .read_only });
+    defer file.close();
+
+    var h = try Header.read(&file);
+
+    std.debug.print("\n------\nHeader\n------\n", .{});
     std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
     std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });
-    std.debug.print("Reserved: {s}\n\nFirst Record:\n-------------\n", .{h.reserved});
+    std.debug.print("Reserved: {s}\n", .{h.reserved});
 
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    var allocator = gpa.allocator();
-    try f.seekTo(HeaderPkg.headerSize() + h.records_size);
-    var reader2 = f.reader();
-    var r = try Record.readKey(reader2, allocator);
-    defer r.deinit();
-
-    try f.seekTo(r.offset);
-    _ = try r.readValue(f.reader(), allocator);
-    r.debug();
+    const pointer = try Pointer.read(&file, alloc);
+    try file.seekTo(0);
+    const record = try pointer.readValue(&file, alloc);
+    defer record.deinit();
+    pointer.debug();
+    record.debug();
 }
