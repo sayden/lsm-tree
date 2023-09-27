@@ -24,6 +24,8 @@ pub const Error = error{
 } || RecordError || std.mem.Allocator.Error;
 
 pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
+    const log = std.log.scoped(.DiskManager);
+
     return struct {
         const Self = @This();
         const max_size: usize = max_size_in_bytes;
@@ -270,8 +272,8 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         };
 
         pub fn debug(self: *Self) void {
-            std.debug.print("\n---------------------\n---------------------\nWAL\n---\nMem index:\t{}\nMax Size:\t{}\nPointer size:\t{}\n", .{ self.current_mem_index, self.max_size, self.pointers_size });
-            defer std.debug.print("\n---------------------\n---------------------\n", .{});
+            log.debug("\n---------------------\n---------------------\nWAL\n---\nMem index:\t{}\nMax Size:\t{}\nPointer size:\t{}", .{ self.current_mem_index, self.max_size, self.pointers_size });
+            defer log.debug("\n---------------------\n---------------------", .{});
             self.header.debug();
         }
 

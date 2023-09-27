@@ -53,7 +53,7 @@ pub const DiskManager = struct {
     pub fn getNewFile(self: *DiskManager, alloc: std.mem.Allocator) !FileData {
         const filename = try self.getNewFilename(alloc);
 
-        log.debug("[DM] Creating file {s}\n", .{filename});
+        log.debug("Creating file {s}", .{filename});
 
         var file = try std.fs.createFileAbsolute(filename, std.fs.File.CreateFlags{ .read = true }); //adding reading for tests
 
@@ -77,14 +77,14 @@ pub const DiskManager = struct {
                         return full_path;
                     },
                     else => {
-                        log.err("[DM] Unknown error {s}.\n{!}\n", .{ full_path, err });
+                        log.err("Unknown error {s}.\n{!}", .{ full_path, err });
                         return err;
                     },
                 }
             };
             file.close();
 
-            log.debug("[DM] File {s} already exists, retrying\n", .{full_path});
+            log.debug("File {s} already exists, retrying", .{full_path});
 
             if (totalAttempts > 100) {
                 alloc.free(full_path);
@@ -138,7 +138,7 @@ pub const DiskManager = struct {
     /// FREE the returned value
     pub fn getFilenames(self: *Self, alloc: std.mem.Allocator) ![][]const u8 {
         // Read every file from self.folder_path
-        log.debug("[DM] Reading folder: {s}\n", .{self.getAbsolutePath()});
+        log.debug("Reading folder: {s}", .{self.getAbsolutePath()});
 
         var dirIterator = try std.fs.openIterableDirAbsolute(self.getAbsolutePath(), .{ .no_follow = true });
         defer dirIterator.close();
@@ -166,7 +166,7 @@ pub const DiskManager = struct {
     }
 
     pub fn debug(dm: *Self) void {
-        log.debug("\n------------\nDisk Manager\n------------\nAbsolut path:\t{s}\nId Number:\t{}\n\n", .{ dm.getAbsolutePath(), dm.idNumber });
+        log.debug("\n------------\nDisk Manager\n------------\nAbsolut path:\t{s}\nId Number:\t{}\n", .{ dm.getAbsolutePath(), dm.idNumber });
     }
 };
 

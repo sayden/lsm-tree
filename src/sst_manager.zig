@@ -30,6 +30,10 @@ const sliceEqual = std.mem.eql;
 
 usingnamespace DebugNs;
 
+const Error = error{ResizeAttemptFailed};
+
+const logns = std.log.scoped(.SstManagerNS);
+
 pub const SstIndex = struct {
     const log = std.log.scoped(.SstIndex);
 
@@ -47,7 +51,7 @@ pub const SstIndex = struct {
         var path = try std.fs.cwd().realpathAlloc(alloc, relative);
         defer alloc.free(path);
 
-        log.debug("Opening file {s}\n", .{path});
+        log.debug("Opening file {s}", .{path});
         var file = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
 
         // read header
@@ -136,7 +140,7 @@ pub const SstIndex = struct {
     }
 
     pub fn debug(self: *SstIndex) void {
-        self.log.debug("\nFirst key\t{first_key}\nLast key\t{last_key}\n", self);
+        self.log.debug("\nFirst key\t{first_key}\nLast key\t{last_key}", self);
     }
 };
 
@@ -144,6 +148,8 @@ pub fn SstManager(comptime WalHandlerType: type) type {
     return struct {
         const Self = @This();
         const log = std.log.scoped(.SstManager);
+
+        total_files: usize = 0,
 
         wh: *WalHandlerType,
         disk_manager: *DiskManager,
@@ -166,9 +172,10 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             var first_pointer: ?*Pointer = null;
             var last_pointer: ?*Pointer = null;
 
-            var indices = try alloc.alloc(*SstIndex, file_entries.len);
+            var indices = try alloc.alloc(*SstIndex, file_entries.len + 10);
             errdefer alloc.free(indices);
 
+            var total_files: usize = 0;
             for (0..file_entries.len) |i| {
                 var idx = try SstIndex.init(file_entries[i], alloc);
                 errdefer idx.deinit();
@@ -186,6 +193,7 @@ pub fn SstManager(comptime WalHandlerType: type) type {
                     }
                 }
                 indices[i] = idx;
+                total_files += 1;
             }
 
             var mng: *Self = try alloc.create(Self);
@@ -197,17 +205,52 @@ pub fn SstManager(comptime WalHandlerType: type) type {
                 .wh = wh,
                 .first_pointer = first_pointer.?,
                 .last_pointer = last_pointer.?,
+                .total_files = total_files,
             };
 
             return mng;
         }
 
         pub fn deinit(self: *Self) void {
-            for (self.indices) |i| {
-                i.deinit();
+            for (0..self.total_files) |i| {
+                self.indices[i].deinit();
             }
             self.alloc.free(self.indices);
             self.alloc.destroy(self);
+        }
+
+        fn notifyNewIndexCreated(self: *Self, filename: []const u8) !void {
+            var idx: *SstIndex = try SstIndex.init(filename, self.alloc);
+            errdefer idx.deinit();
+
+            // Check if there is still space in the indices array
+            if (self.total_files < self.indices.len) {
+                self.indices[self.total_files] = idx;
+                self.total_files += 1;
+                return;
+            }
+
+            // if no space is available, resize or rewrite the index table
+            const current_size: usize = self.total_files;
+            const is_resized: bool = self.alloc.resize(self.indices, current_size + 10);
+            if (is_resized) {
+                self.indices.len = current_size + 10;
+                self.indices[current_size] = idx;
+                self.total_files += 1;
+            } else {
+                var indices = try self.alloc.alloc(*SstIndex, current_size + 10);
+                errdefer self.alloc.free(indices);
+
+                for (0..current_size) |i| {
+                    indices[i] = self.indices[i];
+                }
+
+                indices[current_size] = idx;
+                self.total_files += 1;
+
+                self.alloc.free(self.indices);
+                self.indices = indices;
+            }
         }
 
         pub fn append(self: *Self, r: *Record) !void {
@@ -401,5 +444,42 @@ test "sstmanager_persist" {
     if (maybe_filename) |filename| {
         defer alloc.free(filename);
         try std.fs.deleteFileAbsolute(filename);
+    }
+}
+
+test "sstmanager_notify_new_index" {
+    std.testing.log_level = std.log.Level.debug;
+
+    var alloc = std.testing.allocator;
+    var t = try testObj.setup(alloc);
+    defer t.teardown();
+
+    const r1 = try Record.init("mario", "caster", Op.Delete, alloc);
+    defer r1.deinit();
+
+    try t.s.append(r1);
+
+    try expectEqual(@as(usize, 2), t.s.total_files);
+
+    const maybe_filename = try t.s.persist(alloc);
+    if (maybe_filename) |filename| {
+        defer alloc.free(filename);
+
+        const abs_path = try std.fs.cwd().realpathAlloc(alloc, filename);
+        defer alloc.free(abs_path);
+        defer std.fs.deleteFileAbsolute(abs_path) catch |err| {
+            logns.err("Error deleting file {s}: {}", .{ abs_path, err });
+        };
+
+        try t.s.notifyNewIndexCreated(filename);
+    }
+    try expectEqual(@as(usize, 3), t.s.total_files);
+
+    const maybe_record = try t.s.find("mario", alloc);
+    if (maybe_record) |record| {
+        defer record.deinit();
+        try expectEqualStrings("mario", record.getKey());
+    } else {
+        try std.testing.expect(false);
     }
 }
