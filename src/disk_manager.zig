@@ -9,7 +9,7 @@ pub const FileData = struct {
     filename: []const u8,
     alloc: std.mem.Allocator,
 
-    pub fn deinit(self: *FileData) void {
+    pub fn deinit(self: *const FileData) void {
         self.file.close();
         self.alloc.free(self.filename);
     }

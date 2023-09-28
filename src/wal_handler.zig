@@ -9,11 +9,6 @@ const Pointer = PointerNs.Pointer;
 const PointerError = PointerNs.Error;
 const WalError = WalNs.Error;
 
-pub const Result = enum {
-    Ok,
-    WalSwitched,
-};
-
 pub fn WalHandler(comptime WalType: type) type {
     return struct {
         const Self = @This();
@@ -98,29 +93,32 @@ pub fn WalHandler(comptime WalType: type) type {
             return filedata;
         }
 
-        pub fn append(self: *Self, r: *Record) !Result {
+        pub fn append(self: *Self, r: *Record, alloc: std.mem.Allocator) !?FileData {
             if (self.hasEnoughCapacity(r.len())) {
                 try self.current.append(r);
-                return Result.Ok;
+                return null;
             }
 
-            try self.switchWal();
+            const fileData = try self.switchWal(alloc);
+            errdefer fileData.deinit();
+
             try self.current.append(r);
 
-            return Result.WalSwitched;
+            return fileData;
         }
 
-        fn switchWal(self: *Self) !void {
+        fn switchWal(self: *Self, alloc: std.mem.Allocator) !FileData {
             //Get a new file to persist the wal
-            var fileData = try self.disk_manager.getNewFile(self.alloc);
-            defer fileData.deinit();
-            var f = &fileData.file;
+            var fileData = try self.disk_manager.getNewFile(alloc);
+            errdefer fileData.deinit();
 
-            _ = try self.current.persist(f);
+            _ = try self.current.persist(&fileData.file);
             self.old = self.current;
             self.current = self.next;
 
             self.next = try WalType.init(self.alloc);
+
+            return fileData;
         }
 
         /// Finds the record in the current WAL in use
@@ -152,7 +150,10 @@ test "wal_handler_append" {
 
     var r = try Record.init("hello", "world", Op.Create, alloc);
     defer r.deinit();
-    _ = try wh.append(r);
+    const maybe_result = try wh.append(r, alloc);
+    if (maybe_result) |result| {
+        defer result.deinit();
+    }
 
     try expectEqual(@as(usize, 1), wh.current.header.total_records);
     try std.testing.expectError(PointerError.NullOffset, wh.current.mem[0].getOffset());
@@ -163,7 +164,10 @@ test "wal_handler_append" {
     var r2 = try Record.init("hello2", "world2", Op.Create, alloc);
     defer r2.deinit();
 
-    _ = try wh.append(r2);
+    const maybe_file_data = try wh.append(r2, alloc);
+    if (maybe_file_data) |file_data| {
+        defer file_data.deinit();
+    }
 
     try expectEqual(@as(usize, 2), wh.current.header.total_records);
     try expect(r2 != wh.current.mem[0]);
@@ -182,7 +186,10 @@ test "wal_handler_persist" {
 
     var r = try Record.init("hello", "world", Op.Create, alloc);
     defer r.deinit();
-    _ = try wh.append(r);
+    const maybe_file_data = try wh.append(r, alloc);
+    if (maybe_file_data) |file_data| {
+        defer file_data.deinit();
+    }
 
     var fileData = try wh.persist(wh.current);
     // TODO check if the file that has been created has the expected contents

@@ -21,7 +21,7 @@ const Math = std.math;
 const Order = Math.Order;
 const DiskManager = DiskManagerNs.DiskManager;
 const WalHandler = WalHandlerNs.WalHandler;
-const WalResult = WalHandlerNs.Result;
+const WalAppendResult = WalHandlerNs.AppendResult;
 const MemoryWal = MemoryWalNs.MemoryWal;
 const WalError = MemoryWalNs.Error;
 
@@ -254,9 +254,9 @@ pub fn SstManager(comptime WalHandlerType: type) type {
         }
 
         pub fn append(self: *Self, r: *Record) !void {
-            return switch (try self.wh.append(r)) {
-                WalResult.Ok => return,
-                WalResult.WalSwitched => {},
+            return if (try self.wh.append(r, self.alloc)) |file_data| {
+                defer file_data.deinit();
+                try self.notifyNewIndexCreated(file_data.filename);
             };
         }
 
@@ -290,6 +290,10 @@ pub fn SstManager(comptime WalHandlerType: type) type {
 
             return null;
         }
+
+        // pub fn compact(self: *Self, alloc: std.mem.Allocator) !void {
+        // Find 2 overlapping files, start with the smaller ones
+        // }
 
         pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
             return self.wh.persistCurrent(alloc);
