@@ -10,6 +10,9 @@ const Pointer = @import("./pointer.zig").Pointer;
 const Strings = @import("./strings.zig");
 const strcmp = Strings.strcmp;
 const Math = std.math;
+const IteratorNs = @import("./iterator.zig");
+const Iterator = IteratorNs.ItemIterator;
+const BackwardsIterator = IteratorNs.ItemBackwardIterator;
 
 const DebugNs = @import("./debug.zig");
 
@@ -130,16 +133,18 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             return HeaderNs.headerSize() + self.recordsSize() + self.pointersSize();
         }
 
+        const IteratorType = Iterator(*Record);
         // Creates a forward iterator to go through the wal.
-        pub fn iterator(self: *Self) RecordIterator {
-            const iter = RecordIterator.init(self.mem[0..self.header.total_records]);
+        pub fn iterator(self: *Self) IteratorType {
+            const iter = IteratorType.init(self.mem[0..self.header.total_records], self.header.total_records);
 
             return iter;
         }
 
+        const BackwardsIteratorType = BackwardsIterator(*Record);
         // Creates a forward iterator to go through the wal.
-        pub fn backwards_iterator(self: *Self) RecordBackwardIterator {
-            const iter = RecordBackwardIterator.init(self.mem[0..self.header.total_records]);
+        pub fn backwards_iterator(self: *Self) BackwardsIteratorType {
+            const iter = BackwardsIteratorType.init(self.mem[0..self.header.total_records], self.header.total_records);
 
             return iter;
         }
@@ -212,65 +217,6 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             return res.compare(Math.CompareOperator.lte);
         }
 
-        const RecordIterator = struct {
-            pos: usize = 0,
-            records: []*Record,
-
-            pub fn init(records: []*Record) RecordIterator {
-                return RecordIterator{
-                    .records = records,
-                };
-            }
-
-            pub fn next(self: *RecordIterator) ?*Record {
-                if (self.pos == self.records.len) {
-                    return null;
-                }
-
-                const r = self.records[self.pos];
-                self.pos += 1;
-                return r;
-            }
-        };
-
-        const RecordBackwardIterator = struct {
-            pos: usize = 0,
-            records: []*Record,
-            finished: bool = false,
-
-            pub fn init(records: []*Record) RecordBackwardIterator {
-                const tuple = @subWithOverflow(records.len, 1);
-                if (tuple[1] != 0) {
-                    //empty
-
-                    return RecordBackwardIterator{
-                        .records = records,
-                        .pos = 0,
-                        .finished = true,
-                    };
-                }
-                return RecordBackwardIterator{
-                    .records = records,
-                    .pos = records.len - 1,
-                };
-            }
-
-            pub fn next(self: *RecordBackwardIterator) ?*Record {
-                if (self.pos == 0 and self.finished) {
-                    return null;
-                }
-
-                const r = self.records[self.pos];
-                if (self.pos != 0) {
-                    self.pos -= 1;
-                } else {
-                    self.finished = true;
-                }
-
-                return r;
-            }
-        };
-
         pub fn debug(self: *Self) void {
             log.debug("\n---------------------\n---------------------\nWAL\n---\nMem index:\t{}\nMax Size:\t{}\nPointer size:\t{}", .{ self.current_mem_index, self.max_size, self.pointers_size });
             defer log.debug("\n---------------------\n---------------------", .{});
@@ -286,6 +232,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
     };
 }
 
+const log_testing = std.log.scoped(.TestingMemoryWal);
 const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
@@ -386,7 +333,7 @@ test "wal_find_a_key" {
 }
 
 test "wal_size_on_memory" {
-    try std.testing.expectEqual(216, @sizeOf(MemoryWal(100)));
+    try std.testing.expectEqual(224, @sizeOf(MemoryWal(100)));
 }
 
 test "wal_persist" {
@@ -401,6 +348,7 @@ test "wal_persist" {
 
     var file = try tmp_dir.dir.createFile("test.sst", std.fs.File.CreateFlags{ .read = true });
     defer file.close();
+    // defer copyFileToTmp(file);
 
     const bytes_written = try wal.persist(&file);
     try expectEqual(@as(usize, HeaderNs.headerSize() + wal.header.pointers_size + wal.header.records_size), bytes_written);
@@ -446,4 +394,21 @@ test "wal_persist" {
     try expectEqualStrings("world1", record2.getVal());
     try expectEqual(HeaderNs.headerSize() + total_records * calculated_pointer_size + record1.valueLen(), try record2.getOffset());
     try expectEqual(Op.Create, record2.pointer.op);
+}
+
+fn copyFileToTmp(original_file: std.fs.File) void {
+    var dest_file = std.fs.createFileAbsolute("/tmp/example.sst", std.fs.File.CreateFlags{}) catch |err| {
+        log_testing.err("Error attempting to create a new file. Could not clone file in temp: {}", .{err});
+        return;
+    };
+    defer dest_file.close();
+
+    original_file.seekTo(0) catch |err| {
+        log_testing.err("Error attempting seek operation on file. Could not clone file in temp: {}", .{err});
+        return;
+    };
+
+    dest_file.writeFileAll(original_file, std.fs.File.WriteFileOptions{}) catch |err| {
+        log_testing.err("Error attempting to write file. Could not clone file in temp: {}", .{err});
+    };
 }

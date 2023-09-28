@@ -59,6 +59,8 @@ pub const SstIndex = struct {
 
         // read pointers
         var pointers = try alloc.alloc(*Pointer, header.total_records);
+        errdefer alloc.free(pointers);
+
         for (0..header.total_records) |i| {
             var p = try Pointer.read(&file, alloc);
             pointers[i] = p;
@@ -291,9 +293,15 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             return null;
         }
 
-        // pub fn compact(self: *Self, alloc: std.mem.Allocator) !void {
-        // Find 2 overlapping files, start with the smaller ones
-        // }
+        pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !void {
+            _ = alloc;
+            _ = idx2;
+            _ = idx1;
+            _ = self;
+            // Find 2 overlapping files at the same level, start with the smaller ones
+            var i: usize = 0;
+            _ = i;
+        }
 
         pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
             return self.wh.persistCurrent(alloc);
@@ -333,9 +341,13 @@ const testObj = struct {
 
     fn setup(alloc: std.mem.Allocator) !testObj {
         var dm = try DiskManager.init("./testing", alloc);
+        errdefer dm.deinit();
+
         var wh = try WalHandlerType.init(dm, alloc);
+        errdefer wh.deinit();
 
         var s = try SstManagerType.init(wh, dm, alloc);
+        errdefer s.deinit();
 
         return testObj{
             .dm = dm,
