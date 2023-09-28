@@ -98,7 +98,6 @@ pub fn WalHandler(comptime WalType: type) type {
                 try self.current.append(r);
                 return null;
             }
-
             const fileData = try self.switchWal(alloc);
             errdefer fileData.deinit();
 
@@ -124,6 +123,10 @@ pub fn WalHandler(comptime WalType: type) type {
         /// Finds the record in the current WAL in use
         pub fn find(self: *Self, key: []const u8, alloc: std.mem.Allocator) !?*Record {
             return self.current.find(key, alloc);
+        }
+
+        pub fn totalRecords(self: *Self) usize {
+            return self.current.header.total_records;
         }
 
         pub fn hasEnoughCapacity(self: *Self, size: usize) bool {

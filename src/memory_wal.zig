@@ -11,8 +11,8 @@ const Strings = @import("./strings.zig");
 const strcmp = Strings.strcmp;
 const Math = std.math;
 const IteratorNs = @import("./iterator.zig");
-const Iterator = IteratorNs.ItemIterator;
-const BackwardsIterator = IteratorNs.ItemBackwardIterator;
+const Iterator = IteratorNs.Iterator;
+const IteratorBackwards = IteratorNs.IteratorBackwards;
 
 const DebugNs = @import("./debug.zig");
 
@@ -102,6 +102,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             }
 
             self.mem[self.header.total_records] = try r.clone(self.alloc);
+            errdefer self.mem[self.header.total_records].deinit();
             self.header.total_records += 1;
             self.header.records_size += r.valueLen();
             self.header.pointers_size += r.pointerSize();
@@ -136,15 +137,15 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         const IteratorType = Iterator(*Record);
         // Creates a forward iterator to go through the wal.
         pub fn iterator(self: *Self) IteratorType {
-            const iter = IteratorType.init(self.mem[0..self.header.total_records], self.header.total_records);
+            const iter = IteratorType.init(self.mem[0..self.header.total_records]);
 
             return iter;
         }
 
-        const BackwardsIteratorType = BackwardsIterator(*Record);
+        const BackwardsIteratorType = IteratorBackwards(*Record);
         // Creates a forward iterator to go through the wal.
         pub fn backwards_iterator(self: *Self) BackwardsIteratorType {
-            const iter = BackwardsIteratorType.init(self.mem[0..self.header.total_records], self.header.total_records);
+            const iter = BackwardsIteratorType.init(self.mem[0..self.header.total_records]);
 
             return iter;
         }
@@ -266,6 +267,8 @@ test "wal_iterator_backwards" {
 
     var next = iter.next();
     try expectEqualStrings("world6", next.?.value);
+    next = iter.next();
+    try expectEqualStrings("world5", next.?.value);
 }
 
 test "wal_iterator" {

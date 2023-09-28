@@ -38,8 +38,12 @@ pub const Header = struct {
 
     pub fn write(h: *Header, file: *std.fs.File) !usize {
         var writer = file.writer();
+
         try writer.writeIntLittle(u8, h.magic_number);
+
+        //first pointer happens after header is written
         try writer.writeIntLittle(usize, headerSize());
+
         try writer.writeIntLittle(usize, h.last_pointer_offset);
         try writer.writeIntLittle(usize, h.total_records);
         try writer.writeIntLittle(usize, h.records_size);
@@ -60,32 +64,26 @@ pub const Header = struct {
         var first_key = try reader.readIntLittle(usize);
         var last_key = try reader.readIntLittle(usize);
 
+        var total_records = try reader.readIntLittle(usize);
+
+        // Size of the records, only values without header or pointers
+        var records_size = try reader.readIntLittle(usize);
+
+        var pointers_size = try reader.readIntLittle(usize);
+        const header_size = try reader.readIntLittle(usize);
+        const level = try reader.readByte();
+
         var header = Header{
             .reserved = undefined,
             .last_pointer_offset = last_key,
             .first_pointer_offset = first_key,
             .magic_number = magic,
+            .total_records = total_records,
+            .records_size = records_size,
+            .pointers_size = pointers_size,
+            .header_size = header_size,
+            .level = level,
         };
-
-        // total records
-        var total_records = try reader.readIntLittle(usize);
-        header.total_records = total_records;
-
-        // Size of the records store, only records without header or pointers
-        var records_size = try reader.readIntLittle(usize);
-        header.records_size = records_size;
-
-        // Size of the pointers space
-        var pointers_size = try reader.readIntLittle(usize);
-        header.pointers_size = pointers_size;
-
-        // header size of this file, regardless of the current implementation's size
-        const header_size = try reader.readIntLittle(usize);
-        header.header_size = header_size;
-
-        // level of compaction of this index
-        const level = try reader.readByte();
-        header.level = level;
 
         // reserved space
         _ = try reader.readAtLeast(&header.reserved, @sizeOf(@TypeOf(header.reserved)));
@@ -95,7 +93,7 @@ pub const Header = struct {
 
     pub fn debug(h: *const Header) void {
         std.debug.print("\n------\nHeader\n------\n", .{});
-        std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\nLevel:\t\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset, h.level });
+        std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\nLevel:\t\t\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset, h.level });
         std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\nPointers size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size, h.pointers_size });
         std.debug.print("Reserved: {s}\n\n", .{h.reserved});
     }

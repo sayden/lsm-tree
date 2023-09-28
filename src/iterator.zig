@@ -1,52 +1,50 @@
-pub fn ItemIterator(comptime T: anytype) type {
+pub fn Iterator(comptime T: anytype) type {
     return struct {
-        const Self: type = @This();
+        const Self = @This();
 
         pos: usize = 0,
-        items: []T,
-        size: usize = 0,
+        records: []T,
 
-        pub fn init(items: []T, size: usize) Self {
+        pub fn init(records: []T) Self {
             return Self{
-                .items = items,
-                .size = size,
+                .records = records,
             };
         }
 
         pub fn next(self: *Self) ?T {
-            if (self.pos == self.size) {
+            if (self.pos == self.records.len) {
                 return null;
             }
 
-            const r = self.items[self.pos];
+            const r = self.records[self.pos];
             self.pos += 1;
             return r;
         }
     };
 }
 
-pub fn ItemBackwardIterator(comptime T: anytype) type {
+pub fn IteratorBackwards(comptime T: anytype) type {
     return struct {
-        const Self: type = @This();
+        const Self = @This();
 
         pos: usize = 0,
-        items: []T,
+        records: []T,
         finished: bool = false,
-        size: usize = 0,
 
-        pub fn init(items: []T, size: usize) Self {
-            const tuple = @subWithOverflow(size, 1);
+        pub fn init(records: []T) Self {
+            const tuple = @subWithOverflow(records.len, 1);
             if (tuple[1] != 0) {
                 //empty
 
                 return Self{
-                    .items = items,
-                    .size = size,
+                    .records = records,
+                    .pos = 0,
+                    .finished = true,
                 };
             }
             return Self{
-                .items = items,
-                .pos = size - 1,
+                .records = records,
+                .pos = records.len - 1,
             };
         }
 
@@ -55,7 +53,7 @@ pub fn ItemBackwardIterator(comptime T: anytype) type {
                 return null;
             }
 
-            const r = self.items[self.pos];
+            const r = self.records[self.pos];
             if (self.pos != 0) {
                 self.pos -= 1;
             } else {

@@ -24,6 +24,7 @@ const WalHandler = WalHandlerNs.WalHandler;
 const WalAppendResult = WalHandlerNs.AppendResult;
 const MemoryWal = MemoryWalNs.MemoryWal;
 const WalError = MemoryWalNs.Error;
+const Iterator = @import("./iterator.zig").Iterator;
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;
@@ -293,6 +294,16 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             return null;
         }
 
+        pub fn totalRecords(self: *Self) usize {
+            var total: usize = 0;
+            var iter: Iterator(*SstIndex) = Iterator(*SstIndex).init(self.indices[0..self.total_files]);
+            while (iter.next()) |index| {
+                total += index.header.total_records;
+            }
+
+            return total + self.wh.totalRecords();
+        }
+
         pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !void {
             _ = alloc;
             _ = idx2;
@@ -389,11 +400,14 @@ test "sstmanager_init" {
     try expectEqualStrings("hello6", maybe_record.?.getKey());
     try expectEqualStrings("world6", maybe_record.?.value);
 
+    try expectEqual(@as(usize, 14), t.s.totalRecords());
+
     // this line appends an already existing key to the wal
     var record = try Record.init("hello6", "new_world", Op.Create, alloc);
     defer record.deinit();
 
     _ = try t.s.append(record);
+    try expectEqual(@as(usize, 15), t.s.totalRecords());
 
     const maybe_record2 = try t.s.find("hello6", alloc);
     defer maybe_record2.?.deinit();
