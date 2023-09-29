@@ -3,20 +3,20 @@ pub fn Iterator(comptime T: anytype) type {
         const Self = @This();
 
         pos: usize = 0,
-        records: []T,
+        items: []T,
 
-        pub fn init(records: []T) Self {
+        pub fn init(items: []T) Self {
             return Self{
-                .records = records,
+                .items = items,
             };
         }
 
         pub fn next(self: *Self) ?T {
-            if (self.pos == self.records.len) {
+            if (self.pos == self.items.len) {
                 return null;
             }
 
-            const r = self.records[self.pos];
+            const r = self.items[self.pos];
             self.pos += 1;
             return r;
         }
@@ -28,23 +28,23 @@ pub fn IteratorBackwards(comptime T: anytype) type {
         const Self = @This();
 
         pos: usize = 0,
-        records: []T,
+        items: []T,
         finished: bool = false,
 
-        pub fn init(records: []T) Self {
-            const tuple = @subWithOverflow(records.len, 1);
+        pub fn init(items: []T) Self {
+            const tuple = @subWithOverflow(items.len, 1);
             if (tuple[1] != 0) {
                 //empty
 
                 return Self{
-                    .records = records,
+                    .items = items,
                     .pos = 0,
                     .finished = true,
                 };
             }
             return Self{
-                .records = records,
-                .pos = records.len - 1,
+                .items = items,
+                .pos = items.len - 1,
             };
         }
 
@@ -53,7 +53,7 @@ pub fn IteratorBackwards(comptime T: anytype) type {
                 return null;
             }
 
-            const r = self.records[self.pos];
+            const r = self.items[self.pos];
             if (self.pos != 0) {
                 self.pos -= 1;
             } else {
