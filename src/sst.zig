@@ -3,7 +3,7 @@ const Pointer = @import("./pointer.zig").Pointer;
 const Record = @import("./record.zig").Record;
 const HeaderNs = @import("./header.zig");
 const SstIndex = @import("./sst_manager.zig").SstIndex;
-const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 const Header = HeaderNs.Header;
 

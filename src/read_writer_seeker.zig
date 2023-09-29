@@ -5,8 +5,7 @@ const Output = union(enum) {
     fixed: []const u8,
 };
 
-// pub fn WriterSeeker(comptime Buffer: type) type {
-pub const WriterSeeker = union(enum) {
+pub const ReaderWriterSeeker = union(enum) {
     const Self = @This();
 
     file: std.fs.File,
@@ -21,13 +20,13 @@ pub const WriterSeeker = union(enum) {
         return Self{ .file = f };
     }
 
-    pub fn write(self: *WriterSeeker, bytes: []u8) anyerror!usize {
+    pub fn write(self: *ReaderWriterSeeker, bytes: []u8) anyerror!usize {
         return switch (self.*) {
             inline else => |*case| case.write(bytes),
         };
     }
 
-    pub fn writeAll(self: *WriterSeeker, bytes: []u8) anyerror!void {
+    pub fn writeAll(self: *ReaderWriterSeeker, bytes: []u8) anyerror!void {
         return switch (self.*) {
             inline else => |*case| {
                 var writer = case.writer();
@@ -36,7 +35,7 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
-    pub fn writeIntLittle(self: *WriterSeeker, comptime T: type, value: T) anyerror!void {
+    pub fn writeIntLittle(self: *ReaderWriterSeeker, comptime T: type, value: T) anyerror!void {
         return switch (self.*) {
             inline else => |*case| {
                 var writer = case.writer();
@@ -45,7 +44,7 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
-    pub fn readIntLittle(self: *WriterSeeker, comptime T: type) !T {
+    pub fn readIntLittle(self: *ReaderWriterSeeker, comptime T: type) !T {
         return switch (self.*) {
             inline else => |*case| {
                 var reader = case.reader();
@@ -54,7 +53,7 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
-    pub fn readAtLeast(self: *WriterSeeker, buffer: []u8, len: usize) anyerror!usize {
+    pub fn readAtLeast(self: *ReaderWriterSeeker, buffer: []u8, len: usize) anyerror!usize {
         return switch (self.*) {
             inline else => |*case| {
                 var reader = case.reader();
@@ -63,7 +62,7 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
-    pub fn writeByte(self: *WriterSeeker, byte: u8) anyerror!void {
+    pub fn writeByte(self: *ReaderWriterSeeker, byte: u8) anyerror!void {
         return switch (self.*) {
             inline else => |*case| {
                 var writer = case.writer();
@@ -72,13 +71,13 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
-    pub fn read(self: *WriterSeeker, buffer: []u8) anyerror!usize {
+    pub fn read(self: *ReaderWriterSeeker, buffer: []u8) anyerror!usize {
         return switch (self.*) {
             inline else => |*case| case.read(buffer),
         };
     }
 
-    pub fn readByte(self: *WriterSeeker) (anyerror || anyerror)!u8 {
+    pub fn readByte(self: *ReaderWriterSeeker) (anyerror || anyerror)!u8 {
         return switch (self.*) {
             inline else => |*case| {
                 var reader = case.reader();
@@ -87,7 +86,7 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
-    pub fn seekTo(self: *WriterSeeker, pos: usize) anyerror!void {
+    pub fn seekTo(self: *ReaderWriterSeeker, pos: usize) anyerror!void {
         return switch (self.*) {
             inline else => |*case| case.seekTo(pos),
         };
@@ -112,7 +111,7 @@ test "asdfasdf" {
     var fwriter = file.writer();
     _ = fwriter;
 
-    var ws = WriterSeeker.initBuf(buf);
+    var ws = ReaderWriterSeeker.initBuf(buf);
     var wss = &ws;
     var hello = try alloc.dupe(u8, "hello");
     defer alloc.free(hello);

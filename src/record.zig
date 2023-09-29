@@ -2,7 +2,7 @@ const std = @import("std");
 const Op = @import("./ops.zig").Op;
 const lsmtree = @import("./record.zig");
 const Pointer = @import("./pointer.zig").Pointer;
-const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 pub const RecordError = error{ BufferTooSmall, KeyTooBig };
 pub const RecordLengthType: type = usize;

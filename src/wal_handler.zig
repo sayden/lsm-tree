@@ -78,7 +78,7 @@ pub fn WalHandler(comptime WalType: type) type {
             }
 
             //Get a new file to persist the wal
-            var filedata = try self.disk_manager.getNewFile(self.alloc);
+            var filedata = try self.disk_manager.getNewFile("sst", self.alloc);
             errdefer {
                 std.debug.print("Deleting file {s}\n", .{filedata.filename});
                 std.fs.deleteFileAbsolute(filedata.filename) catch |err| {
@@ -106,7 +106,7 @@ pub fn WalHandler(comptime WalType: type) type {
 
         fn switchWal(self: *Self, alloc: std.mem.Allocator) !FileData {
             //Get a new file to persist the wal
-            var fileData = try self.disk_manager.getNewFile(alloc);
+            var fileData = try self.disk_manager.getNewFile("sst", alloc);
             errdefer fileData.deinit();
 
             _ = try self.current.persist(fileData.file);

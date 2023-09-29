@@ -1,6 +1,6 @@
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
-const ReadWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
+const ReadWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
 

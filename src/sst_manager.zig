@@ -26,7 +26,7 @@ const MemoryWal = MemoryWalNs.MemoryWal;
 const WalError = MemoryWalNs.Error;
 const Iterator = @import("./iterator.zig").Iterator;
 const FileData = DiskManagerNs.FileData;
-const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;

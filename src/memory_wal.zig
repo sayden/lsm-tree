@@ -12,8 +12,7 @@ const strcmp = Strings.strcmp;
 const Math = std.math;
 const IteratorNs = @import("./iterator.zig");
 const Iterator = IteratorNs.Iterator;
-const IteratorBackwards = IteratorNs.IteratorBackwards;
-const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 const DebugNs = @import("./debug.zig");
 
@@ -65,7 +64,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         }
 
         pub fn deinit(self: *Self) void {
-            var iter = self.iterator();
+            var iter = self.getIterator();
             while (iter.next()) |r| {
                 r.deinit();
             }
@@ -112,7 +111,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         // Compare the provided key with the ones in memory and
         // returns the last record that is found (or none if none is found)
         pub fn find(self: *Self, key_to_find: []const u8, alloc: std.mem.Allocator) !?*Record {
-            var iter = self.backwards_iterator();
+            var iter = self.getIterator();
             while (iter.next()) |r| {
                 if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
                     return r.clone(alloc);
@@ -126,9 +125,10 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             return max_size_in_bytes - self.getWalSize();
         }
 
-        // Sort the list of records in lexicographical order
-        pub fn sort(self: *Self) void {
+        // Sort in place the list of records in lexicographical order. Returns a reference to the list
+        pub fn sort(self: *Self) []*Record {
             std.sort.insertion(*Record, self.mem[0..self.header.total_records], {}, lexicographical_compare);
+            return self.mem;
         }
 
         pub fn getWalSize(self: *Self) usize {
@@ -137,16 +137,8 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
 
         const IteratorType = Iterator(*Record);
         // Creates a forward iterator to go through the wal.
-        pub fn iterator(self: *Self) IteratorType {
+        pub fn getIterator(self: *Self) IteratorType {
             const iter = IteratorType.init(self.mem[0..self.header.total_records]);
-
-            return iter;
-        }
-
-        const BackwardsIteratorType = IteratorBackwards(*Record);
-        // Creates a forward iterator to go through the wal.
-        pub fn backwards_iterator(self: *Self) BackwardsIteratorType {
-            const iter = BackwardsIteratorType.init(self.mem[0..self.header.total_records]);
 
             return iter;
         }
@@ -173,7 +165,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
                 return Error.EmptyWal;
             }
 
-            self.sort();
+            _ = self.sort();
 
             // Write first and last pointer in the header. We cannot write this before
             // because we need to know their offsets after writing. It can be calculated
@@ -261,25 +253,12 @@ fn createWal(alloc: std.mem.Allocator) !*MemoryWal(4096) {
     return wal;
 }
 
-test "wal_iterator_backwards" {
-    var alloc = std.testing.allocator;
-    var wal = try createWal(alloc);
-    defer wal.deinit();
-
-    var iter = wal.backwards_iterator();
-
-    var next = iter.next();
-    try expectEqualStrings("world6", next.?.value);
-    next = iter.next();
-    try expectEqualStrings("world5", next.?.value);
-}
-
 test "wal_iterator" {
     var alloc = std.testing.allocator;
     var wal = try createWal(alloc);
     defer wal.deinit();
 
-    var iter = wal.iterator();
+    var iter = wal.getIterator();
 
     _ = iter.next();
     _ = iter.next();
@@ -302,7 +281,6 @@ test "wal_lexicographical_compare" {
         alloc.free(key);
         alloc.free(val);
     }
-    wal.sort();
 }
 
 test "wal_add_record" {

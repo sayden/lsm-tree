@@ -1,3 +1,9 @@
+const std = @import("std");
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
+const headerSize = @import("./header.zig").headerSize;
+const Record = @import("./record.zig").Record;
+const Pointer = @import("./pointer.zig").Pointer;
+
 pub fn Iterator(comptime T: anytype) type {
     return struct {
         const Self = @This();
@@ -22,6 +28,31 @@ pub fn Iterator(comptime T: anytype) type {
         }
     };
 }
+
+pub const BytesIterator = struct {
+    reader: *ReaderWriterSeeker,
+    alloc: std.mem.Allocator,
+
+    pub fn init(rs: *ReaderWriterSeeker, alloc: std.mem.Allocator) !BytesIterator {
+        try rs.seekTo(headerSize());
+        return BytesIterator{ .reader = rs, .alloc = alloc };
+    }
+
+    pub fn next(self: *BytesIterator) ?*Record {
+        const pointer = Pointer.read(self.rs, self.alloc) catch |err| {
+            std.log.err("{}", .{err});
+            return null;
+        };
+        errdefer pointer.deinit();
+
+        const record = pointer.readValue(self.reader, self.alloc) catch |err| {
+            std.log.err("{}", .{err});
+            return null;
+        };
+
+        return record;
+    }
+};
 
 pub fn IteratorBackwards(comptime T: anytype) type {
     return struct {

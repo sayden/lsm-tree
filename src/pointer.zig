@@ -3,7 +3,7 @@ const Record = @import("./record.zig").Record;
 const KeyLengthType = @import("./record.zig").KeyLengthType;
 const Op = @import("ops.zig").Op;
 const RecordLengthType = @import("./record.zig").RecordLengthType;
-const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 const Debug = @import("./debug.zig");
 const println = Debug.println;
