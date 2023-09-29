@@ -50,8 +50,8 @@ pub const DiskManager = struct {
     /// there's not "WriterCloser" to return a writer than can be closed so the
     /// concrete File implementation must be returned.
     /// deinit the returned value when done. It will also close the file
-    pub fn getNewFile(self: *DiskManager, alloc: std.mem.Allocator) !FileData {
-        const filename = try self.getNewFilename(alloc);
+    pub fn getNewFile(self: *DiskManager, ext: []const u8, alloc: std.mem.Allocator) !FileData {
+        const filename = try self.getNewFilename(ext, alloc);
 
         log.debug("Creating file {s}", .{filename});
 
@@ -65,10 +65,10 @@ pub const DiskManager = struct {
         return fileData;
     }
 
-    fn getNewFilename(dm: *DiskManager, alloc: std.mem.Allocator) ![]const u8 {
+    fn getNewFilename(dm: *DiskManager, ext: []const u8, alloc: std.mem.Allocator) ![]const u8 {
         var totalAttempts: usize = 0;
 
-        var full_path: []const u8 = try dm.getNewFilepath(alloc);
+        var full_path: []const u8 = try dm.getNewFilepath(ext, alloc);
 
         while (true) {
             var file: std.fs.File = std.fs.openFileAbsolute(full_path, std.fs.File.OpenFlags{}) catch |err| {
@@ -94,7 +94,7 @@ pub const DiskManager = struct {
             totalAttempts += 1;
 
             alloc.free(full_path);
-            full_path = try dm.getNewFilepath(alloc);
+            full_path = try dm.getNewFilepath(ext, alloc);
         }
 
         return std.fs.File.OpenError.Unexpected;
@@ -105,10 +105,10 @@ pub const DiskManager = struct {
     }
 
     /// It must return a unique numeric filename for the file being created. Caller is owner of array response
-    fn getNewFilepath(dm: *DiskManager, alloc: std.mem.Allocator) ![]const u8 {
+    fn getNewFilepath(dm: *DiskManager, ext: []const u8, alloc: std.mem.Allocator) ![]const u8 {
         var n = dm.getNewFileID();
 
-        var buf = try std.fmt.allocPrint(alloc, "{s}/{}.sst", .{ dm.getAbsolutePath(), n });
+        var buf = try std.fmt.allocPrint(alloc, "{s}/{}.{s}", .{ dm.getAbsolutePath(), n, ext });
 
         return buf;
     }
@@ -193,7 +193,7 @@ test "disk_manager_init" {
     var dm = try DiskManager.init(folder, alloc);
     defer dm.deinit();
 
-    var f = try dm.getNewFile(alloc);
+    var f = try dm.getNewFile("sst", alloc);
     defer f.deinit();
 }
 
@@ -205,11 +205,11 @@ test "disk_manager_getNewFile" {
     var dm = try DiskManager.init(folder, alloc);
     defer dm.deinit();
 
-    var fileData = try dm.getNewFile(alloc);
+    var fileData = try dm.getNewFile("sst", alloc);
     defer fileData.deinit();
     try std.fs.deleteFileAbsolute(fileData.filename);
 
-    var fileData2 = try dm.getNewFile(alloc);
+    var fileData2 = try dm.getNewFile("sst", alloc);
     defer fileData2.deinit();
 
     return std.fs.deleteFileAbsolute(fileData2.filename);
