@@ -72,7 +72,7 @@ pub fn WalHandler(comptime WalType: type) type {
             return filename;
         }
 
-        fn persist(self: *Self, wal: *WalType) !FileData {
+        pub fn persist(self: *Self, wal: *WalType) !FileData {
             if (wal.header.total_records == 0) {
                 return WalError.EmptyWal;
             }

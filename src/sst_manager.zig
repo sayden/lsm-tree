@@ -320,18 +320,22 @@ pub fn SstManager(comptime WalHandlerType: type) type {
         }
 
         pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !FileData {
-            var wal = Wal((idx1.size() + idx2.size()) * 1.2).init(alloc);
-            errdefer wal.deinit();
+            //TODO fix this 2048
+            var wal = try MemoryWal(2048).init(alloc);
+            defer wal.deinit();
 
-            var indices_iterator = self.getIterator();
+            var idx1_iterator = idx1.getPointersIterator();
+            while (idx1_iterator.next()) |pointer| {
+                const r = try pointer.readValue(&idx1.file, alloc);
+                errdefer r.deinit();
+                try wal.appendOwn(r);
+            }
 
-            while (indices_iterator.next()) |index| {
-                var pointers_iterator = index.getPointersIterator();
-                while (pointers_iterator.next()) |pointer| {
-                    const r = try pointer.readValue(index.file, alloc);
-                    errdefer r.deinit();
-                    try wal.appendOwn(r);
-                }
+            var idx2_iterator = idx2.getPointersIterator();
+            while (idx2_iterator.next()) |pointer| {
+                const r = try pointer.readValue(&idx2.file, alloc);
+                errdefer r.deinit();
+                try wal.appendOwn(r);
             }
 
             const file_data = try self.wh.persist(wal);

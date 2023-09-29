@@ -75,10 +75,10 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         pub fn appendKv(self: *Self, k: []const u8, v: []const u8) Error!void {
             var r = try Record.init(k, v, Op.Create, self.alloc);
             errdefer r.deinit();
-            return self.appendToNotOwned(r);
+            return self.appendOwn(r);
         }
 
-        pub fn appendToNotOwned(self: *Self, r: *Record) !void {
+        pub fn appendOwn(self: *Self, r: *Record) !void {
             const record_size: usize = r.len();
 
             // Check if there's available space in the WAL
@@ -295,7 +295,7 @@ test "wal_lexicographical_compare" {
     for (0..7) |i| {
         var key = try std.fmt.allocPrint(alloc, "hello{}", .{i});
         var val = try std.fmt.allocPrint(alloc, "world{}", .{i});
-        try wal.appendToNotOwned(try Record.init(key, val, Op.Create, alloc));
+        try wal.appendOwn(try Record.init(key, val, Op.Create, alloc));
         alloc.free(key);
         alloc.free(val);
     }
@@ -310,7 +310,7 @@ test "wal_add_record" {
 
     var r = try Record.init("hello", "world", Op.Create, alloc);
 
-    try wal.appendToNotOwned(r);
+    try wal.appendOwn(r);
 
     try expect(wal.header.total_records == 1);
     try expect(wal.header.records_size == r.valueLen());

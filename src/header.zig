@@ -1,6 +1,5 @@
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
-const Pointer = @import("./pointer.zig").Pointer;
 
 const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
 
