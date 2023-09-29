@@ -26,6 +26,7 @@ const MemoryWal = MemoryWalNs.MemoryWal;
 const WalError = MemoryWalNs.Error;
 const Iterator = @import("./iterator.zig").Iterator;
 const FileData = DiskManagerNs.FileData;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;
@@ -56,15 +57,16 @@ pub const SstIndex = struct {
         log.debug("Opening file {s}", .{path});
         var file = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
 
+        var ws = ReaderWriterSeeker.initFile(file);
         // read header
-        const header = try Header.read(&file);
+        const header = try Header.read(&ws);
 
         // read pointers
         var pointers = try alloc.alloc(*Pointer, header.total_records);
         errdefer alloc.free(pointers);
 
         for (0..header.total_records) |i| {
-            var p = try Pointer.read(&file, alloc);
+            var p = try Pointer.read(&ws, alloc);
             pointers[i] = p;
         }
 
@@ -144,7 +146,8 @@ pub const SstIndex = struct {
 
     fn retrieveRecordFromFile(idx: *SstIndex, p: *Pointer, alloc: std.mem.Allocator) !*Record {
         try idx.file.seekTo(try p.getOffset());
-        return try p.readValue(&idx.file, alloc);
+        var ws = ReaderWriterSeeker.initFile(idx.file);
+        return try p.readValue(&ws, alloc);
     }
 
     // checks if key is in the range of keys of this sst
@@ -324,16 +327,18 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             var wal = try MemoryWal(2048).init(alloc);
             defer wal.deinit();
 
+            var ws = ReaderWriterSeeker.initFile(idx1.file);
             var idx1_iterator = idx1.getPointersIterator();
             while (idx1_iterator.next()) |pointer| {
-                const r = try pointer.readValue(&idx1.file, alloc);
+                const r = try pointer.readValue(&ws, alloc);
                 errdefer r.deinit();
                 try wal.appendOwn(r);
             }
 
+            var ws2 = ReaderWriterSeeker.initFile(idx2.file);
             var idx2_iterator = idx2.getPointersIterator();
             while (idx2_iterator.next()) |pointer| {
-                const r = try pointer.readValue(&idx2.file, alloc);
+                const r = try pointer.readValue(&ws2, alloc);
                 errdefer r.deinit();
                 try wal.appendOwn(r);
             }

@@ -86,9 +86,7 @@ pub fn WalHandler(comptime WalType: type) type {
                 };
             }
 
-            var file: *std.fs.File = &filedata.file;
-
-            _ = try wal.persist(file);
+            _ = try wal.persist(filedata.file);
 
             return filedata;
         }
@@ -111,7 +109,7 @@ pub fn WalHandler(comptime WalType: type) type {
             var fileData = try self.disk_manager.getNewFile(alloc);
             errdefer fileData.deinit();
 
-            _ = try self.current.persist(&fileData.file);
+            _ = try self.current.persist(fileData.file);
             self.old = self.current;
             self.current = self.next;
 

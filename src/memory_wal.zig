@@ -13,6 +13,7 @@ const Math = std.math;
 const IteratorNs = @import("./iterator.zig");
 const Iterator = IteratorNs.Iterator;
 const IteratorBackwards = IteratorNs.IteratorBackwards;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
 
 const DebugNs = @import("./debug.zig");
 
@@ -165,7 +166,9 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
         /// Record
         /// ...
         /// EOF
-        pub fn persist(self: *Self, file: *std.fs.File) !usize {
+        pub fn persist(self: *Self, f: std.fs.File) !usize {
+            var ws = ReaderWriterSeeker.initFile(f);
+
             if (self.header.total_records == 0) {
                 return Error.EmptyWal;
             }
@@ -178,7 +181,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             self.header.first_pointer_offset = HeaderNs.headerSize();
             self.header.last_pointer_offset = self.header.pointers_size + HeaderNs.headerSize() - self.mem[self.header.total_records - 1].pointerSize();
 
-            try file.seekTo(HeaderNs.headerSize());
+            try ws.seekTo(HeaderNs.headerSize());
 
             // Move offset after header, which will be written later
             var record_offset = HeaderNs.headerSize() + self.header.pointers_size;
@@ -187,7 +190,7 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             // Write pointer
             for (0..self.header.total_records) |i| {
                 self.mem[i].pointer.offset = record_offset;
-                written += try self.mem[i].writePointer(file);
+                written += try self.mem[i].writePointer(&ws);
 
                 record_offset += self.mem[i].valueLen();
             }
@@ -195,12 +198,12 @@ pub fn MemoryWal(comptime max_size_in_bytes: usize) type {
             // Write records
             for (0..self.header.total_records) |i| {
                 // self.mem[i].pointer.offset = record_offset;
-                written += try self.mem[i].write(file);
+                written += try self.mem[i].write(&ws);
             }
 
             // Write the header
-            try file.seekTo(0);
-            written += try self.header.write(file);
+            try ws.seekTo(0);
+            written += try self.header.write(&ws);
 
             return written;
         }
@@ -353,12 +356,13 @@ test "wal_persist" {
     defer file.close();
     // defer copyFileToTmp(file);
 
-    const bytes_written = try wal.persist(&file);
+    const bytes_written = try wal.persist(file);
     try expectEqual(@as(usize, HeaderNs.headerSize() + wal.header.pointers_size + wal.header.records_size), bytes_written);
 
     try file.seekTo(0);
 
-    const header = try Header.read(&file);
+    var ws = ReaderWriterSeeker.initFile(file);
+    const header = try Header.read(&ws);
 
     var calculated_pointer_size: usize = 17;
     var total_records: usize = wal.header.total_records;
@@ -372,16 +376,16 @@ test "wal_persist" {
     try file.seekTo(HeaderNs.headerSize());
 
     // Read first 2 pointers
-    var pointer1: *Pointer = try Pointer.read(&file, alloc);
+    var pointer1: *Pointer = try Pointer.read(&ws, alloc);
     defer pointer1.deinit();
 
-    var pointer2: *Pointer = try Pointer.read(&file, alloc);
+    var pointer2: *Pointer = try Pointer.read(&ws, alloc);
     defer pointer2.deinit();
 
     try expectEqual(HeaderNs.headerSize() + total_records * calculated_pointer_size, try pointer1.getOffset());
 
     //Read the entire value
-    var record1 = try pointer1.readValue(&file, alloc);
+    var record1 = try pointer1.readValue(&ws, alloc);
     defer record1.deinit();
 
     try expectEqualStrings("hello0", record1.getKey());
@@ -390,7 +394,7 @@ test "wal_persist" {
     try expectEqual(Op.Create, record1.pointer.op);
 
     //Read the entire value
-    var record2 = try pointer2.readValue(&file, alloc);
+    var record2 = try pointer2.readValue(&ws, alloc);
     defer record2.deinit();
 
     try expectEqualStrings("hello1", record2.getKey());

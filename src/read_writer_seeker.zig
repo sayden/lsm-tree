@@ -27,6 +27,15 @@ pub const WriterSeeker = union(enum) {
         };
     }
 
+    pub fn writeAll(self: *WriterSeeker, bytes: []u8) anyerror!void {
+        return switch (self.*) {
+            inline else => |*case| {
+                var writer = case.writer();
+                return writer.writeAll(bytes);
+            },
+        };
+    }
+
     pub fn writeIntLittle(self: *WriterSeeker, comptime T: type, value: T) anyerror!void {
         return switch (self.*) {
             inline else => |*case| {
@@ -56,7 +65,10 @@ pub const WriterSeeker = union(enum) {
 
     pub fn writeByte(self: *WriterSeeker, byte: u8) anyerror!void {
         return switch (self.*) {
-            inline else => |*case| case.writeByte(byte),
+            inline else => |*case| {
+                var writer = case.writer();
+                return writer.writeByte(byte);
+            },
         };
     }
 

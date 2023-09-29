@@ -3,6 +3,7 @@ const Pointer = @import("./pointer.zig").Pointer;
 const Record = @import("./record.zig").Record;
 const HeaderNs = @import("./header.zig");
 const SstIndex = @import("./sst_manager.zig").SstIndex;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
 
 const Header = HeaderNs.Header;
 
@@ -18,9 +19,10 @@ pub const Sst = struct {
 
     stored_records: usize,
 
-    pub fn init(f: *std.fs.File, alloc: std.mem.Allocator) !Sst {
+    pub fn init(file: *std.fs.File, alloc: std.mem.Allocator) !Sst {
         // read header
-        const header = try Header.read(f);
+        var ws = ReaderWriterSeeker.initFile(file.*);
+        const header = try Header.read(&ws);
 
         // init
         var pointers = try alloc.alloc(*Pointer, header.total_records);
@@ -28,7 +30,7 @@ pub const Sst = struct {
 
         // read pointers
         for (0..header.total_records) |i| {
-            const pointer = try Pointer.read(f, alloc);
+            const pointer = try Pointer.read(&ws, alloc);
             pointers[i] = pointer;
         }
 
@@ -40,7 +42,7 @@ pub const Sst = struct {
         //read values
         for (0..header.total_records) |i| {
             var pointer: *Pointer = pointers[i];
-            var r = try pointer.readValueReusePointer(f, alloc);
+            var r = try pointer.readValueReusePointer(&ws, alloc);
             errdefer r.deinit();
             mem[i] = r;
             stored_records += 1;

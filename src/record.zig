@@ -2,6 +2,7 @@ const std = @import("std");
 const Op = @import("./ops.zig").Op;
 const lsmtree = @import("./record.zig");
 const Pointer = @import("./pointer.zig").Pointer;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
 
 pub const RecordError = error{ BufferTooSmall, KeyTooBig };
 pub const RecordLengthType: type = usize;
@@ -58,38 +59,35 @@ pub const Record = struct {
         return 1 + @sizeOf(RecordLengthType) + 1;
     }
 
-    pub fn writePointer(self: *Self, f: *std.fs.File) !usize {
-        return self.pointer.write(f);
+    pub fn writePointer(self: *Self, ws: *ReaderWriterSeeker) !usize {
+        return self.pointer.write(ws);
     }
 
-    pub fn write(self: *Self, f: *std.fs.File) !usize {
-        var writer = f.writer();
-
+    pub fn write(self: *Self, ws: *ReaderWriterSeeker) !usize {
         var bytes_written: usize = 0;
-        const op = [_]u8{@intFromEnum(self.pointer.op)};
+        var op = [_]u8{@intFromEnum(self.pointer.op)};
 
-        bytes_written += try writer.write(&op);
+        bytes_written += try ws.write(&op);
 
         // Write N bytes to indicate the total size of the record. N is defined as the number of bytes
         // that a type RecordLengthType can store (8 for u64, 4 for a u32, etc.)
-        try writer.writeIntLittle(RecordLengthType, self.valueLen());
+        try ws.writeIntLittle(RecordLengthType, self.valueLen());
         bytes_written += @sizeOf(RecordLengthType);
 
-        try writer.writeAll(self.value);
+        try ws.writeAll(self.value);
         bytes_written += self.value.len;
 
         return bytes_written;
     }
 
-    pub fn read(r: *Self, f: *std.fs.File, alloc: std.mem.Allocator) !usize {
-        try f.seekTo(try r.pointer.getOffset());
-        var reader = f.reader();
+    pub fn read(r: *Self, rs: *ReaderWriterSeeker, alloc: std.mem.Allocator) !usize {
+        try rs.seekTo(try r.pointer.getOffset());
 
-        r.pointer.op = @as(Op, @enumFromInt(try reader.readByte()));
+        r.pointer.op = @as(Op, @enumFromInt(try rs.readByte()));
         var bytes_written: usize = 1;
 
         //Read the record length bytes (4 or 8 usually) to get the total length of the record
-        const record_length = try reader.readIntLittle(RecordLengthType);
+        const record_length = try rs.readIntLittle(RecordLengthType);
         bytes_written += @sizeOf(RecordLengthType);
 
         // read as many bytes as are left to get the value
@@ -98,7 +96,7 @@ pub const Record = struct {
         r.value = try alloc.alloc(u8, value_length);
         errdefer alloc.free(r.value);
 
-        _ = try reader.readAtLeast(r.value, value_length);
+        _ = try rs.readAtLeast(r.value, value_length);
         bytes_written += value_length;
 
         r.allocator = alloc;
@@ -215,30 +213,27 @@ test "record_write_readValues" {
 
     record2.pointer.offset = record2.pointer.len() * 2 + record2.valueLen();
 
-    // Create a temp file
-    var tmp_dir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{});
-    defer tmp_dir.cleanup();
-
-    var file = try tmp_dir.dir.createFile("test.sst", std.fs.File.CreateFlags{ .read = true });
-    defer file.close();
+    var buf: [256]u8 = undefined;
+    var wss = ReaderWriterSeeker.initBuf(&buf);
+    var ws = &wss;
 
     // write the first pointer and second pointer
-    const pointer_bytes_written = try record1.writePointer(&file);
+    const pointer_bytes_written = try record1.writePointer(ws);
     try expectEq(@as(usize, 16), pointer_bytes_written);
-    _ = try record2.writePointer(&file);
+    _ = try record2.writePointer(ws);
 
     // write the first record and second record
-    const value_bytes_written = try record1.write(&file);
+    const value_bytes_written = try record1.write(ws);
     try expectEq(@as(usize, 14), value_bytes_written);
-    _ = try record2.write(&file);
+    _ = try record2.write(ws);
 
-    try file.seekTo(0);
+    try ws.seekTo(0);
 
     // read first and second pointers
-    var pointer1 = try Pointer.read(&file, alloc);
+    var pointer1 = try Pointer.read(ws, alloc);
     defer pointer1.deinit();
 
-    var pointer2 = try Pointer.read(&file, alloc);
+    var pointer2 = try Pointer.read(ws, alloc);
     defer pointer2.deinit();
 
     try expectEq(Op.Delete, pointer1.op);
@@ -246,10 +241,10 @@ test "record_write_readValues" {
     try std.testing.expectEqualDeep(record2.pointer, pointer2);
 
     // read second then first, to ensure offseting is working as expected
-    var record2_ = try pointer2.readValue(&file, alloc);
+    var record2_ = try pointer2.readValue(ws, alloc);
     defer record2_.deinit();
 
-    var record1_ = try pointer1.readValue(&file, alloc);
+    var record1_ = try pointer1.readValue(ws, alloc);
     defer record1_.deinit();
 
     try std.testing.expectEqualDeep(record2, record2_);
