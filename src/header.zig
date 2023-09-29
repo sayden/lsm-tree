@@ -1,5 +1,6 @@
 const std = @import("std");
 const expectEqual = std.testing.expectEqual;
+const ReadWriterSeeker = @import("./read_writer_seeker.zig").WriterSeeker;
 
 const Error = error{ InputArrayTooSmall, OutputArrayTooSmall, NoLastKeyOffsetFound };
 
@@ -35,9 +36,7 @@ pub const Header = struct {
         return Header{};
     }
 
-    pub fn write(h: *Header, file: *std.fs.File) !usize {
-        var writer = file.writer();
-
+    pub fn write(h: *Header, writer: *ReadWriterSeeker) !usize {
         try writer.writeIntLittle(u8, h.magic_number);
 
         //first pointer happens after header is written
@@ -54,9 +53,7 @@ pub const Header = struct {
         return headerSize();
     }
 
-    pub fn read(file: *std.fs.File) !Header {
-        var reader = file.reader();
-
+    pub fn read(reader: *ReadWriterSeeker) !Header {
         //Magic number
         var magic = try reader.readByte();
 
@@ -117,17 +114,13 @@ test "header_write_read" {
         .level = 99,
     };
 
-    // Create a temp file
-    var tmp_dir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{});
-    defer tmp_dir.cleanup();
+    var buf: [256]u8 = undefined;
+    var ws = ReadWriterSeeker.initBuf(&buf);
 
-    var file = try tmp_dir.dir.createFile("header_test.sst", std.fs.File.CreateFlags{ .read = true });
-    defer file.close();
+    _ = try header.write(&ws);
+    try ws.seekTo(0);
 
-    _ = try header.write(&file);
-    try file.seekTo(0);
-
-    var new_h = try Header.read(&file);
+    var new_h = try Header.read(&ws);
     try expectEqual(new_h.magic_number, header.magic_number);
     try expectEqual(header.total_records, new_h.total_records);
     try expectEqual(header.records_size, new_h.records_size);
