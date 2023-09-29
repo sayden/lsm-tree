@@ -25,6 +25,7 @@ const WalAppendResult = WalHandlerNs.AppendResult;
 const MemoryWal = MemoryWalNs.MemoryWal;
 const WalError = MemoryWalNs.Error;
 const Iterator = @import("./iterator.zig").Iterator;
+const FileData = DiskManagerNs.FileData;
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;
@@ -93,6 +94,10 @@ pub const SstIndex = struct {
         self.allocator.destroy(self);
     }
 
+    pub fn size(self: *SstIndex) usize {
+        return self.header.pointers_size + self.header.records_size + self.header.header_size;
+    }
+
     pub fn getPointer(pointers: []*Pointer, index: usize) ?*Pointer {
         if (index >= pointers.len) {
             return null;
@@ -130,6 +135,11 @@ pub const SstIndex = struct {
         }
 
         return null;
+    }
+
+    const PointerIterator = Iterator(*Pointer);
+    pub fn getPointersIterator(self: *SstIndex) PointerIterator {
+        return PointerIterator.init(self.pointers);
     }
 
     fn retrieveRecordFromFile(idx: *SstIndex, p: *Pointer, alloc: std.mem.Allocator) !*Record {
@@ -304,14 +314,29 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             return total + self.wh.totalRecords();
         }
 
-        pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !void {
-            _ = alloc;
-            _ = idx2;
-            _ = idx1;
-            _ = self;
-            // Find 2 overlapping files at the same level, start with the smaller ones
-            var i: usize = 0;
-            _ = i;
+        const IndexIterator = Iterator(*SstIndex);
+        fn getIterator(self: *Self) IndexIterator {
+            return IndexIterator.init(self.indices);
+        }
+
+        pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !FileData {
+            var wal = Wal((idx1.size() + idx2.size()) * 1.2).init(alloc);
+            errdefer wal.deinit();
+
+            var indices_iterator = self.getIterator();
+
+            while (indices_iterator.next()) |index| {
+                var pointers_iterator = index.getPointersIterator();
+                while (pointers_iterator.next()) |pointer| {
+                    const r = try pointer.readValue(index.file, alloc);
+                    errdefer r.deinit();
+                    try wal.appendOwn(r);
+                }
+            }
+
+            const file_data = try self.wh.persist(wal);
+            try self.notifyNewIndexCreated(file_data.filename);
+            return file_data;
         }
 
         pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
@@ -478,8 +503,6 @@ test "sstmanager_persist" {
 }
 
 test "sstmanager_notify_new_index" {
-    std.testing.log_level = std.log.Level.debug;
-
     var alloc = std.testing.allocator;
     var t = try testObj.setup(alloc);
     defer t.teardown();
@@ -512,4 +535,27 @@ test "sstmanager_notify_new_index" {
     } else {
         try std.testing.expect(false);
     }
+}
+
+test "sstmanager_compact_indices" {
+    var alloc = std.testing.allocator;
+    var t = try testObj.setup(alloc);
+    defer t.teardown();
+
+    const idx1 = t.s.indices[0];
+    const idx2 = t.s.indices[1];
+
+    try expectEqual(@as(usize, 2), t.s.total_files);
+
+    var file_data = try t.s.compactIndices(idx1, idx2, alloc);
+    defer file_data.deinit();
+    defer deleteFile(file_data.filename);
+
+    try expectEqual(@as(usize, 3), t.s.total_files);
+}
+
+fn deleteFile(filename: []const u8) void {
+    std.fs.deleteFileAbsolute(filename) catch |err| {
+        std.debug.print("File {s} could not be deleted: {}\n", .{ filename, err });
+    };
 }
