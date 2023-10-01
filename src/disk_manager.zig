@@ -136,7 +136,7 @@ pub const DiskManager = struct {
     }
 
     /// FREE the returned value
-    pub fn getFilenames(self: *Self, alloc: std.mem.Allocator) ![][]const u8 {
+    pub fn getFilenames(self: *Self, ext: []const u8, alloc: std.mem.Allocator) ![][]const u8 {
         // Read every file from self.folder_path
         log.debug("Reading folder: {s}", .{self.getAbsolutePath()});
 
@@ -154,7 +154,7 @@ pub const DiskManager = struct {
                 _ = alloc.resize(names, names.len + 64);
             }
 
-            if (std.mem.eql(u8, item.name[item.name.len - 4 .. item.name.len], ".sst")) {
+            if (std.mem.eql(u8, item.name[item.name.len - 3 .. item.name.len], ext)) {
                 names[i] = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ absolute_path, item.name });
                 i += 1;
             }
@@ -178,7 +178,7 @@ test "disk_manager_get_files" {
     var dm = try DiskManager.init(folder, alloc);
     defer dm.deinit();
 
-    var files = try dm.getFilenames(alloc);
+    var files = try dm.getFilenames("sst", alloc);
     defer alloc.free(files);
     for (files) |file| {
         alloc.free(file);

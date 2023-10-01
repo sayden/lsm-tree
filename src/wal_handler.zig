@@ -4,10 +4,10 @@ const DiskManager = @import("./disk_manager.zig").DiskManager;
 const Op = @import("./ops.zig").Op;
 const FileData = @import("./disk_manager.zig").FileData;
 const PointerNs = @import("./pointer.zig");
-const WalNs = @import("./memory_wal.zig");
+const Wal = @import("./wal.zig");
 const Pointer = PointerNs.Pointer;
 const PointerError = PointerNs.Error;
-const WalError = WalNs.Error;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 pub fn WalHandler(comptime WalType: type) type {
     return struct {
@@ -15,9 +15,9 @@ pub fn WalHandler(comptime WalType: type) type {
 
         disk_manager: *DiskManager,
 
-        old: ?*WalType,
-        current: *WalType,
-        next: *WalType,
+        old: ?WalType.Type,
+        current: WalType.Type,
+        next: WalType.Type,
 
         alloc: std.mem.Allocator,
 
@@ -30,10 +30,10 @@ pub fn WalHandler(comptime WalType: type) type {
             wh.old = null;
 
             // Create a WAL to use as current
-            wh.current = try WalType.init(alloc);
+            wh.current = try WalType.init(Wal.initial_wal_size, alloc);
 
             // Create also "next" WAL to switch when 'current' is full
-            wh.next = try WalType.init(alloc);
+            wh.next = try WalType.init(Wal.initial_wal_size, alloc);
 
             return wh;
         }
@@ -62,7 +62,7 @@ pub fn WalHandler(comptime WalType: type) type {
                 }
                 fileData.deinit();
             } else |err| switch (err) {
-                WalError.EmptyWal => return null,
+                Wal.Error.EmptyWal => return null,
                 else => {
                     errdefer err;
                     {}
@@ -72,9 +72,9 @@ pub fn WalHandler(comptime WalType: type) type {
             return filename;
         }
 
-        pub fn persist(self: *Self, wal: *WalType) !FileData {
-            if (wal.header.total_records == 0) {
-                return WalError.EmptyWal;
+        pub fn persist(self: *Self, wal: WalType.Type) !FileData {
+            if (wal.ctx.header.total_records == 0) {
+                return Wal.Error.EmptyWal;
             }
 
             //Get a new file to persist the wal
@@ -86,7 +86,8 @@ pub fn WalHandler(comptime WalType: type) type {
                 };
             }
 
-            _ = try wal.persist(filedata.file);
+            var ws = ReaderWriterSeeker.initFile(filedata.file);
+            _ = try wal.persist(&ws);
 
             return filedata;
         }
@@ -109,11 +110,12 @@ pub fn WalHandler(comptime WalType: type) type {
             var fileData = try self.disk_manager.getNewFile("sst", alloc);
             errdefer fileData.deinit();
 
-            _ = try self.current.persist(fileData.file);
+            var ws = ReaderWriterSeeker.initFile(fileData.file);
+            _ = try self.current.persist(&ws);
             self.old = self.current;
             self.current = self.next;
 
-            self.next = try WalType.init(self.alloc);
+            self.next = try WalType.init(1024, self.alloc);
 
             return fileData;
         }
@@ -124,7 +126,7 @@ pub fn WalHandler(comptime WalType: type) type {
         }
 
         pub fn totalRecords(self: *Self) usize {
-            return self.current.header.total_records;
+            return self.current.ctx.header.total_records;
         }
 
         pub fn hasEnoughCapacity(self: *Self, size: usize) bool {
@@ -137,7 +139,6 @@ const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-const MemoryWal = @import("./memory_wal.zig").MemoryWal;
 const SstIndex = @import("./sst_manager.zig").SstIndex;
 
 test "wal_handler_append" {
@@ -146,7 +147,7 @@ test "wal_handler_append" {
     var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler(MemoryWal(2048)).init(dm, alloc);
+    var wh = try WalHandler(Wal.Mem).init(dm, alloc);
     defer wh.deinit();
 
     var r = try Record.init("hello", "world", Op.Create, alloc);
@@ -156,11 +157,11 @@ test "wal_handler_append" {
         defer result.deinit();
     }
 
-    try expectEqual(@as(usize, 1), wh.current.header.total_records);
-    try std.testing.expectError(PointerError.NullOffset, wh.current.mem[0].getOffset());
-    try expect(r != wh.current.mem[0]);
-    try expectEqualStrings(r.getKey(), wh.current.mem[0].getKey());
-    try expectEqualStrings(r.getVal(), wh.current.mem[0].getVal());
+    try expectEqual(@as(usize, 1), wh.current.ctx.header.total_records);
+    try std.testing.expectError(PointerError.NullOffset, wh.current.ctx.mem[0].getOffset());
+    try expect(r != wh.current.ctx.mem[0]);
+    try expectEqualStrings(r.getKey(), wh.current.ctx.mem[0].getKey());
+    try expectEqualStrings(r.getVal(), wh.current.ctx.mem[0].getVal());
 
     var r2 = try Record.init("hello2", "world2", Op.Create, alloc);
     defer r2.deinit();
@@ -170,10 +171,10 @@ test "wal_handler_append" {
         defer file_data.deinit();
     }
 
-    try expectEqual(@as(usize, 2), wh.current.header.total_records);
-    try expect(r2 != wh.current.mem[0]);
-    try expect(r2.getKey().len != wh.current.mem[0].getKey().len);
-    try expect(r2.getVal().len != wh.current.mem[0].getVal().len);
+    try expectEqual(@as(usize, 2), wh.current.ctx.header.total_records);
+    try expect(r2 != wh.current.ctx.mem[0]);
+    try expect(r2.getKey().len != wh.current.ctx.mem[0].getKey().len);
+    try expect(r2.getVal().len != wh.current.ctx.mem[0].getVal().len);
 }
 
 test "wal_handler_persist" {
@@ -182,7 +183,7 @@ test "wal_handler_persist" {
     var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler(MemoryWal(2048)).init(dm, alloc);
+    var wh = try WalHandler(Wal.Mem).init(dm, alloc);
     defer wh.deinit();
 
     var r = try Record.init("hello", "world", Op.Create, alloc);

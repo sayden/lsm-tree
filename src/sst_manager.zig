@@ -6,7 +6,7 @@ const PointerNs = @import("./pointer.zig");
 const SstNs = @import("./sst.zig");
 const OpNs = @import("./ops.zig");
 const StringsNs = @import("./strings.zig");
-const MemoryWalNs = @import("./memory_wal.zig");
+const Wal = @import("./wal.zig");
 const DiskManagerNs = @import("./disk_manager.zig");
 const WalHandlerNs = @import("./wal_handler.zig");
 
@@ -21,9 +21,6 @@ const Math = std.math;
 const Order = Math.Order;
 const DiskManager = DiskManagerNs.DiskManager;
 const WalHandler = WalHandlerNs.WalHandler;
-const WalAppendResult = WalHandlerNs.AppendResult;
-const MemoryWal = MemoryWalNs.MemoryWal;
-const WalError = MemoryWalNs.Error;
 const Iterator = @import("./iterator.zig").Iterator;
 const FileData = DiskManagerNs.FileData;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
@@ -177,7 +174,7 @@ pub fn SstManager(comptime WalHandlerType: type) type {
         alloc: std.mem.Allocator,
 
         pub fn init(wh: *WalHandlerType, dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
-            const file_entries = try dm.getFilenames(alloc);
+            const file_entries = try dm.getFilenames("sst", alloc);
             defer {
                 for (file_entries) |entry| {
                     alloc.free(entry);
@@ -276,16 +273,6 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             };
         }
 
-        //TODO
-        fn getSstIndexFromWal(self: *Self, wal: *MemoryWal) !*SstIndex {
-            var s: *SstIndex = try self.alloc.create(SstIndex);
-            s.allocator = self.alloc;
-            // s.file
-            s.first_pointer = wal.pointers[0];
-            s.last_pointer = wal.pointers[wal.header.total_records - 1];
-            s.header = wal.header;
-        }
-
         // Looks for the key in the WAL, if not present, checks in the indices
         pub fn find(self: *Self, key: []const u8, alloc: std.mem.Allocator) !?*Record {
             // Check in wal first
@@ -323,8 +310,8 @@ pub fn SstManager(comptime WalHandlerType: type) type {
         }
 
         pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !FileData {
-            //TODO fix this 2048
-            var wal = try MemoryWal(2048).init(alloc);
+            const combined_size = idx1.size() + idx2.size();
+            var wal = try Wal.Mem.init(combined_size, alloc);
             defer wal.deinit();
 
             var ws = ReaderWriterSeeker.initFile(idx1.file);
@@ -374,7 +361,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const allocPrint = std.fmt.allocPrint;
 
 const testObj = struct {
-    const WalType = MemoryWal(2048);
+    const WalType = Wal.Mem;
     const WalHandlerType = WalHandler(WalType);
     const SstManagerType = SstManager(WalHandlerType);
 

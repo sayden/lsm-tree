@@ -8,9 +8,6 @@ comptime {
     _ = @import("record.zig");
     _ = @import("sst.zig");
     _ = @import("sst_manager.zig");
-    _ = @import("memory_wal.zig");
     _ = @import("wal_handler.zig");
-    _ = @import("wal_file.zig");
-    _ = @import("wal_memory.zig");
     _ = @import("wal.zig");
 }
