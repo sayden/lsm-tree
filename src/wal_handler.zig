@@ -12,6 +12,7 @@ const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeke
 pub fn WalHandler(comptime WalType: type) type {
     return struct {
         const Self = @This();
+        const log = std.log.scoped(.WalHandler);
 
         disk_manager: *DiskManager,
 
@@ -80,9 +81,9 @@ pub fn WalHandler(comptime WalType: type) type {
             //Get a new file to persist the wal
             var filedata = try self.disk_manager.getNewFile("sst", self.alloc);
             errdefer {
-                std.debug.print("Deleting file {s}\n", .{filedata.filename});
+                log.debug("Deleting file {s}\n", .{filedata.filename});
                 std.fs.deleteFileAbsolute(filedata.filename) catch |err| {
-                    std.debug.print("Error trying to delete file {}\n", .{err});
+                    log.debug("Error trying to delete file {}\n", .{err});
                 };
             }
 

@@ -585,7 +585,7 @@ test "wal_persist" {
 
     var file = try tmp_dir.dir.createFile("test.sst", std.fs.File.CreateFlags{ .read = true });
     defer file.close();
-    // defer copyFileToTmp(file);
+    defer copyFileToTmp(file);
 
     var ws = ReaderWriterSeeker.initFile(file);
 

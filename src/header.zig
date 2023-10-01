@@ -31,14 +31,13 @@ pub const Header = struct {
 
     header_size: usize = headerSize(),
 
-    id: [16]u8 = undefined,
+    id: [36]u8 = undefined,
 
     reserved: [128]u8 = undefined,
 
     pub fn init() Header {
         var header = Header{};
-        const bytes = UUID.init().bytes;
-        @memcpy(&header.id, &bytes);
+        UUID.init().to_string(&header.id);
         return header;
     }
 
@@ -89,28 +88,36 @@ pub const Header = struct {
         };
 
         // reserved space
-        _ = try reader.readAtLeast(&header.id, 16);
+        _ = try reader.readAtLeast(&header.id, 36);
         _ = try reader.readAtLeast(&header.reserved, @sizeOf(@TypeOf(header.reserved)));
 
         return header;
     }
 
+    pub fn getId(self: *const Header, dest: []u8) []u8 {
+        var id = UUID.parse(&self.id) catch unreachable;
+        id.to_string(dest);
+        return dest;
+    }
+
     pub fn debug(h: *const Header) void {
+        var id: [36]u8 = undefined;
+
         std.debug.print("\n------\nHeader\n------\n", .{});
-        std.debug.print("ID:\t\t\t{d}\nMagic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\nLevel:\t\t\t{}\n", .{ h.id, h.magic_number, h.total_records, h.first_pointer_offset, h.level });
+        std.debug.print("ID:\t\t\t{s}\nMagic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\nLevel:\t\t\t{}\n", .{ h.getId(&id), h.magic_number, h.total_records, h.first_pointer_offset, h.level });
         std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\nPointers size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size, h.pointers_size });
         std.debug.print("Reserved: {s}\n\n", .{h.reserved});
     }
 };
 
 pub fn headerSize() usize {
-    return @sizeOf(u8) + @sizeOf(u8) + (@sizeOf(usize) * 6) + 128 + 16;
+    return @sizeOf(u8) + @sizeOf(u8) + (@sizeOf(usize) * 6) + 128 + 36;
 }
 
 test "Header.size" {
     const size = @sizeOf(Header);
-    try std.testing.expectEqual(200, size);
-    try std.testing.expectEqual(@as(usize, 194), headerSize());
+    try std.testing.expectEqual(216, size);
+    try std.testing.expectEqual(@as(usize, 214), headerSize());
 }
 
 test "header_write_read" {
@@ -120,8 +127,8 @@ test "header_write_read" {
         .first_pointer_offset = headerSize(),
         .records_size = 99,
         .level = 99,
-        .id = UUID.init().bytes,
     };
+    UUID.init().to_string(&header.id);
 
     var buf: [256]u8 = undefined;
     var ws = ReadWriterSeeker.initBuf(&buf);

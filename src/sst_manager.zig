@@ -2,6 +2,7 @@ const std = @import("std");
 const ArrayList = std.ArrayList;
 const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
+const UUID = @import("./pkg/zig-uuid/uuid.zig").UUID;
 
 const RecordPkg = @import("./record.zig");
 const HeaderNs = @import("./header.zig");
@@ -41,23 +42,23 @@ pub const SstIndex = struct {
     const log = std.log.scoped(.SstIndex);
 
     header: Header,
-
     first_pointer: *Pointer,
     last_pointer: *Pointer,
-
     file: std.fs.File,
     pointers: []*Pointer,
+    filepath: []const u8,
 
     allocator: Allocator,
 
     pub fn init(relative: []const u8, alloc: Allocator) !*SstIndex {
         var path = try std.fs.cwd().realpathAlloc(alloc, relative);
-        defer alloc.free(path);
+        errdefer alloc.free(path);
 
         log.debug("Opening file {s}", .{path});
         var file = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
 
         var ws = ReaderWriterSeeker.initFile(file);
+
         // read header
         const header = try Header.read(&ws);
 
@@ -82,6 +83,7 @@ pub const SstIndex = struct {
             .file = file,
             .allocator = alloc,
             .pointers = pointers,
+            .filepath = path,
         };
 
         return s;
@@ -92,6 +94,7 @@ pub const SstIndex = struct {
             p.deinit();
         }
 
+        self.allocator.free(self.filepath);
         self.allocator.free(self.pointers);
         self.file.close();
         self.allocator.destroy(self);
@@ -192,8 +195,6 @@ pub fn SstManager(comptime WalType: type) type {
 
             var indices = try ArrayList(*SstIndex).initCapacity(alloc, file_entries.len);
             errdefer indices.deinit();
-            // var indices = try alloc.alloc(*SstIndex, file_entries.len + 10);
-            // errdefer alloc.free(indices);
 
             var total_files: usize = 0;
             for (0..file_entries.len) |i| {
@@ -213,7 +214,6 @@ pub fn SstManager(comptime WalType: type) type {
                     }
                 }
                 try indices.append(idx);
-                // indices[i] = idx;
                 total_files += 1;
             }
 
@@ -237,7 +237,6 @@ pub fn SstManager(comptime WalType: type) type {
                 self.indices.items[i].deinit();
             }
             self.indices.deinit();
-            // self.alloc.free(self.indices);
             self.alloc.destroy(self);
         }
 
@@ -247,35 +246,6 @@ pub fn SstManager(comptime WalType: type) type {
 
             try self.indices.append(idx);
             self.total_files += 1;
-
-            // Check if there is still space in the indices array
-            // if (self.total_files < self.indices.len) {
-            //     self.indices[self.total_files] = idx;
-            //     self.total_files += 1;
-            //     return;
-            // }
-
-            // if no space is available, resize or rewrite the index table
-            // const current_size: usize = self.total_files;
-            // const is_resized: bool = self.alloc.resize(self.indices, current_size + 10);
-            // if (is_resized) {
-            //     self.indices.len = current_size + 10;
-            //     self.indices[current_size] = idx;
-            //     self.total_files += 1;
-            // } else {
-            // var indices = try self.alloc.alloc(*SstIndex, current_size + 10);
-            // errdefer self.alloc.free(indices);
-
-            // for (0..current_size) |i| {
-            //     indices[i] = self.indices[i];
-            // }
-
-            // indices[current_size] = idx;
-            // self.total_files += 1;
-
-            // self.alloc.free(self.indices);
-            // self.indices = indices;
-            // }
         }
 
         pub fn append(self: *Self, r: *Record) !void {
@@ -335,20 +305,37 @@ pub fn SstManager(comptime WalType: type) type {
             var newfiles = ArrayList(FileData).init(self.alloc);
             defer newfiles.deinit();
 
-            for (1..6) |level| {
+            inline for (1..6) |level| {
                 blk: {
                     const items = self.indices.items;
-                    const total_items = self.total_files - 1;
+                    const total_items = self.total_files;
 
                     for (0..total_items) |i| {
-                        for (1..total_items) |j| {
-                            if (indicesHaveOverlappingKeys(level, items[i], items[j])) {
+                        //break if it is the last item
+                        if (i == total_items) {
+                            break;
+                        }
+
+                        //early continue if this file is not the expected level
+                        if (items[i].header.level != level) {
+                            continue;
+                        }
+
+                        for (i + 1..total_items) |j| {
+                            //avoid any kind of accidental self-merging, just to ensure more consistency in case of a regression
+                            if (std.mem.eql(u8, &items[i].header.id, &items[j].header.id)) {
+                                continue;
+                            }
+
+                            if (indicesHaveOverlappingKeys(@truncate(level), items[i], items[j])) {
                                 const wal = try self.compact2Indices(items[i], items[j], self.alloc);
+                                defer wal.deinit();
+
                                 const filedata = try self.wh.persist(wal);
                                 errdefer filedata.deinit();
 
-                                try self.removeIndex(i);
-                                try self.removeIndex(j);
+                                try self.removeIndex(&items[i].header.id);
+                                try self.removeIndex(&items[j].header.id);
 
                                 try newfiles.append(filedata);
                                 break :blk;
@@ -359,8 +346,12 @@ pub fn SstManager(comptime WalType: type) type {
             }
 
             for (newfiles.items) |new_index| {
+                defer new_index.deinit();
                 try self.notifyNewIndexFileCreated(new_index.filename);
-                new_index.deinit();
+
+                if (builtin.is_test) {
+                    try std.fs.deleteFileAbsolute(new_index.filename);
+                }
             }
         }
 
@@ -395,6 +386,8 @@ pub fn SstManager(comptime WalType: type) type {
             //Find index current position
             var pos: usize = 0;
             var found: bool = false;
+
+            log.debug("Deleting index {s}", .{id});
             for (self.indices.items, 0..) |idx, i| {
                 if (std.mem.eql(u8, &idx.header.id, id)) {
                     pos = i;
@@ -404,24 +397,38 @@ pub fn SstManager(comptime WalType: type) type {
             }
 
             if (!found) {
+                log.debug("Index {s} not found", .{id});
                 return Error.IdNotFound;
             }
 
             var removed = self.indices.swapRemove(pos);
+            defer removed.deinit();
+
             if (!builtin.is_test) {
+                log.debug("Deleting file {s}", .{removed.filepath});
                 try std.fs.deleteFileAbsolute(removed.file);
+            } else {
+                log.debug("Skipping deletion of file {s}", .{removed.filepath});
             }
-            removed.deinit();
+
             self.total_files -= 1;
         }
 
-        fn indicesHaveOverlappingKeys(level: u8, id1: *SstIndex, id2: *SstIndex) bool {
-            if (id1.header.level == level and id2.header.level == level) {
-                if (strcmp(id1.last_pointer.key, id2.first_pointer.key) == Order.gt) {
+        fn indicesHaveOverlappingKeys(level: u8, idx1: *SstIndex, idx2: *SstIndex) bool {
+            var id1: [36]u8 = undefined;
+            var id2: [36]u8 = undefined;
+            _ = idx1.header.getId(&id1);
+            _ = idx2.header.getId(&id2);
+            log.debug("{s},{s}", .{ id1, id2 });
+
+            if (idx1.header.level == level and idx2.header.level == level) {
+                if (strcmp(idx1.last_pointer.key, idx2.first_pointer.key) == Order.gt) {
+                    log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
                     return true;
                 }
 
-                if (strcmp(id2.last_pointer.key, id1.first_pointer.key) == Order.gt) {
+                if (strcmp(idx2.last_pointer.key, idx1.first_pointer.key) == Order.gt) {
+                    log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
                     return true;
                 }
             }
@@ -670,6 +677,29 @@ test "sstmanager_compact_indices" {
     defer deleteFile(filedata.filename);
 
     try t.s.notifyNewIndexFileCreated(filedata.filename);
+
+    try expectEqual(@as(usize, 1), t.s.total_files);
+    try expectEqual(@as(usize, total_expected_records), t.s.indices.items[0].header.total_records);
+}
+
+test "sstmanager_attemptCompaction" {
+    std.testing.log_level = .debug;
+    std.debug.print("\n", .{});
+
+    var alloc = std.testing.allocator;
+    var t = try testObj.setup(alloc);
+    defer t.teardown();
+
+    const idx1 = t.s.indices.items[0];
+    const idx2 = t.s.indices.items[1];
+
+    try expectEqual(@as(usize, 2), t.s.indices.items.len);
+
+    const total_expected_records: usize = idx1.header.total_records + idx2.header.total_records;
+
+    try expectEqual(@as(usize, 2), t.s.total_files);
+
+    try t.s.attemptCompaction();
 
     try expectEqual(@as(usize, 1), t.s.total_files);
     try expectEqual(@as(usize, total_expected_records), t.s.indices.items[0].header.total_records);
