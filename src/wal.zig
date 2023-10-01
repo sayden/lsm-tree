@@ -41,6 +41,7 @@ pub fn Wal(
     comptime getWalSizeFn: fn (self: *Context) usize,
     comptime iteratorFn: fn (self: *Context, alloc: ?std.mem.Allocator) anyerror!IteratorType,
     comptime deinitFn: fn (self: *Context) void,
+    comptime debugFn: fn (self: *Context) void,
 ) type {
     return struct {
         const Self = @This();
@@ -86,6 +87,9 @@ pub fn Wal(
         }
         pub fn persist(self: Self, ws: *ReaderWriterSeeker) !usize {
             return persistG(self.ctx.mem, &self.ctx.header, ws);
+        }
+        pub fn debug(self: *Self) void {
+            return debugFn(self.ctx);
         }
     };
 }
@@ -209,6 +213,7 @@ pub const Mem = struct {
         getWalSize,
         getIterator,
         deinit,
+        debug,
     );
 
     pub fn init(size: usize, alloc: std.mem.Allocator) !Type {
@@ -312,9 +317,9 @@ pub const Mem = struct {
     }
 
     pub fn debug(self: *Self) void {
-        log.debug("\n---------------------\n---------------------\nWAL\n---\nMem index:\t{}\nMax Size:\t{}\nPointer size:\t{}", .{ self.current_mem_index, self.max_size, self.pointers_size });
-        defer log.debug("\n---------------------\n---------------------", .{});
         self.header.debug();
+        log.debug("\n---------------------\n---------------------\nWAL\n---\nMem index:\t{}\nMax Size:\t{}\n", .{ self.current_mem_index, self.max_size });
+        defer log.debug("\n---------------------\n---------------------", .{});
     }
 
     pub fn full_debug(self: *Self) void {
@@ -361,6 +366,7 @@ pub const File = struct {
         getWalSize,
         getIterator,
         deinit,
+        debug,
     );
 
     pub fn init(size: usize, dm: *DiskManager, alloc: std.mem.Allocator) !Type {

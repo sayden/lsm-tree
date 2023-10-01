@@ -33,7 +33,7 @@ const sliceEqual = std.mem.eql;
 
 usingnamespace DebugNs;
 
-const Error = error{ResizeAttemptFailed};
+const Error = error{IdNotFound};
 
 const logns = std.log.scoped(.SstManagerNS);
 
@@ -98,7 +98,8 @@ pub const SstIndex = struct {
     }
 
     pub fn size(self: *SstIndex) usize {
-        return self.header.pointers_size + self.header.records_size + self.header.header_size;
+        // TODO To use HeaderNs.headerSize() is not backwards compatible with headers that contain less information
+        return self.header.pointers_size + self.header.records_size + HeaderNs.headerSize();
     }
 
     pub fn getPointer(pointers: []*Pointer, index: usize) ?*Pointer {
@@ -367,7 +368,7 @@ pub fn SstManager(comptime WalType: type) type {
             const combined_size = idx1.size() + idx2.size();
             const level = idx1.header.level + 1;
             var wal = try Wal.Mem.init(combined_size, alloc);
-            defer wal.deinit();
+            errdefer wal.deinit();
 
             var ws = ReaderWriterSeeker.initFile(idx1.file);
             var idx1_iterator = idx1.getPointersIterator();
@@ -390,7 +391,22 @@ pub fn SstManager(comptime WalType: type) type {
             return wal;
         }
 
-        fn removeIndex(self: *Self, pos: usize) !void {
+        fn removeIndex(self: *Self, id: []const u8) !void {
+            //Find index current position
+            var pos: usize = 0;
+            var found: bool = false;
+            for (self.indices.items, 0..) |idx, i| {
+                if (std.mem.eql(u8, &idx.header.id, id)) {
+                    pos = i;
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                return Error.IdNotFound;
+            }
+
             var removed = self.indices.swapRemove(pos);
             if (!builtin.is_test) {
                 try std.fs.deleteFileAbsolute(removed.file);
@@ -637,25 +653,26 @@ test "sstmanager_compact_indices" {
     var t = try testObj.setup(alloc);
     defer t.teardown();
 
-    // const idx1 = t.s.indices.items[0];
-    // const idx2 = t.s.indices.items[1];
-    // const total_expected_records: usize = idx1.header.total_records + idx2.header.total_records;
+    const idx1 = t.s.indices.items[0];
+    const idx2 = t.s.indices.items[1];
+    const total_expected_records: usize = idx1.header.total_records + idx2.header.total_records;
 
-    // try expectEqual(@as(usize, 2), t.s.total_files);
+    try expectEqual(@as(usize, 2), t.s.total_files);
 
-    // var wal = try t.s.compact2Indices(idx1, idx2, alloc);
-    // defer wal.deinit();
+    var wal = try t.s.compact2Indices(idx1, idx2, alloc);
+    defer wal.deinit();
 
-    // try t.s.removeIndex(0);
-    // try t.s.removeIndex(0);
+    try t.s.removeIndex(&idx1.header.id);
+    try t.s.removeIndex(&idx2.header.id);
 
-    // const filedata = try t.wh.persist(wal);
-    // defer filedata.deinit();
+    const filedata = try t.wh.persist(wal);
+    defer filedata.deinit();
+    defer deleteFile(filedata.filename);
 
-    // defer deleteFile(filedata.filename);
+    try t.s.notifyNewIndexFileCreated(filedata.filename);
 
-    // try expectEqual(@as(usize, 1), t.s.total_files);
-    // try expectEqual(@as(usize, total_expected_records), t.s.indices.items[0].header.total_records);
+    try expectEqual(@as(usize, 1), t.s.total_files);
+    try expectEqual(@as(usize, total_expected_records), t.s.indices.items[0].header.total_records);
 }
 
 fn deleteFile(filename: []const u8) void {
