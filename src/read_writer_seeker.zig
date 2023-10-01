@@ -91,6 +91,12 @@ pub const ReaderWriterSeeker = union(enum) {
             inline else => |*case| case.seekTo(pos),
         };
     }
+
+    pub fn getPos(self: *ReaderWriterSeeker) usize {
+        return switch (self.*) {
+            inline else => |case| case.getPos(),
+        };
+    }
 };
 
 test "asdfasdf" {

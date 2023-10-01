@@ -1,4 +1,6 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+
 const RecordNs = @import("./record.zig");
 const Op = @import("./ops.zig").Op;
 const Record = RecordNs.Record;
@@ -25,7 +27,7 @@ pub const Error = error{
     MaxSizeReached,
     CantCreateRecord,
     EmptyWal,
-} || RecordError || std.mem.Allocator.Error;
+} || RecordError || Allocator.Error;
 
 pub const initial_wal_size = 32000;
 
@@ -35,11 +37,11 @@ pub fn Wal(
     comptime appendKvFn: fn (self: *Context, k: []const u8, v: []const u8) anyerror!void,
     comptime appendFn: fn (self: *Context, r: *Record) Error!void,
     comptime appendOwnFn: fn (self: *Context, r: *Record) anyerror!void,
-    comptime findFn: fn (self: *Context, key_to_find: []const u8, alloc: std.mem.Allocator) ?*Record,
+    comptime findFn: fn (self: *Context, key_to_find: []const u8, alloc: Allocator) ?*Record,
     comptime availableBytesFn: fn (self: *Context) usize,
     comptime sortFn: fn (self: *Context) anyerror![]*Record,
     comptime getWalSizeFn: fn (self: *Context) usize,
-    comptime iteratorFn: fn (self: *Context, alloc: ?std.mem.Allocator) anyerror!IteratorType,
+    comptime iteratorFn: fn (self: *Context, alloc: ?Allocator) anyerror!IteratorType,
     comptime deinitFn: fn (self: *Context) void,
     comptime debugFn: fn (self: *Context) void,
 ) type {
@@ -48,7 +50,7 @@ pub fn Wal(
 
         ctx: *Context,
 
-        pub fn init(size: usize, alloc: std.mem.Allocator) anyerror!Self {
+        pub fn init(size: usize, alloc: Allocator) anyerror!Self {
             return Context.init(size, alloc);
         }
 
@@ -64,7 +66,7 @@ pub fn Wal(
         pub fn appendOwn(self: Self, r: *Record) anyerror!void {
             return appendOwnFn(self.ctx, r);
         }
-        pub fn find(self: Self, key_to_find: []const u8, alloc: std.mem.Allocator) ?*Record {
+        pub fn find(self: Self, key_to_find: []const u8, alloc: Allocator) ?*Record {
             return findFn(self.ctx, key_to_find, alloc);
         }
         pub fn availableBytes(self: Self) usize {
@@ -72,7 +74,7 @@ pub fn Wal(
                 self.ctx,
             );
         }
-        pub fn getIterator(self: Self, alloc: ?std.mem.Allocator) !IteratorType {
+        pub fn getIterator(self: Self, alloc: ?Allocator) !IteratorType {
             return iteratorFn(self.ctx, alloc);
         }
         pub fn sort(self: Self) void {
@@ -149,7 +151,7 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
     return written;
 }
 
-pub fn appendKvG(ctx: anytype, k: []const u8, v: []const u8, alloc: std.mem.Allocator) anyerror!void {
+pub fn appendKvG(ctx: anytype, k: []const u8, v: []const u8, alloc: Allocator) anyerror!void {
     var r = try Record.init(k, v, Op.Create, alloc);
     errdefer r.deinit();
     return ctx.appendOwn(r);
@@ -172,7 +174,7 @@ pub fn postAppend(header: *Header, r: *Record) void {
     header.pointers_size += r.pointerSize();
 }
 
-pub fn findG(iter: anytype, key_to_find: []const u8, alloc: std.mem.Allocator) ?*Record {
+pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record {
     while (iter.next()) |r| {
         if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
             return r.clone(alloc) catch |err| {
@@ -190,6 +192,33 @@ pub fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
     return res.compare(Math.CompareOperator.lte);
 }
 
+pub fn read(rs: *ReaderWriterSeeker, alloc: Allocator) !Mem.Type {
+    var wal = try Mem.init(initial_wal_size, alloc);
+    errdefer wal.deinit();
+
+    // Header is not included into a File WAL
+
+    while (true) {
+        var p = try Pointer.read(rs, alloc);
+        errdefer p.deinit();
+
+        const r = try p.readValue(rs, alloc) catch |err| {
+            switch (err) {
+                std.os.SeekError => {
+                    p.deinit();
+                    break;
+                },
+                else => return err,
+            }
+        };
+        errdefer r.deinit();
+
+        try wal.append(r);
+    }
+
+    return wal;
+}
+
 pub const Mem = struct {
     const log = std.log.scoped(.CoreWal);
     const Self = @This();
@@ -199,7 +228,7 @@ pub const Mem = struct {
     mem: []*Record,
     current_mem_index: usize = 0,
 
-    alloc: std.mem.Allocator,
+    alloc: Allocator,
 
     pub const Type = Wal(
         Mem,
@@ -216,7 +245,7 @@ pub const Mem = struct {
         debug,
     );
 
-    pub fn init(size: usize, alloc: std.mem.Allocator) !Type {
+    pub fn init(size: usize, alloc: Allocator) !Type {
         var wal = try setup(size, alloc);
         return .{ .ctx = wal };
     }
@@ -224,7 +253,7 @@ pub const Mem = struct {
     // Start a new in memory WAL using the provided allocator
     // REMEMBER to call `deinit()` once you are done with the iterator,
     // for example after persisting it to disk.
-    fn setup(size: usize, alloc: std.mem.Allocator) !*Mem {
+    fn setup(size: usize, alloc: Allocator) !*Mem {
         var wal = try alloc.create(Mem);
         errdefer alloc.destroy(wal);
 
@@ -277,7 +306,7 @@ pub const Mem = struct {
 
     // Compare the provided key with the ones in memory and
     // returns the last record that is found (or none if none is found)
-    pub fn find(self: *Self, key_to_find: []const u8, alloc: std.mem.Allocator) ?*Record {
+    pub fn find(self: *Self, key_to_find: []const u8, alloc: Allocator) ?*Record {
         var iter = self.getIterator(null) catch unreachable;
         return findG(&iter, key_to_find, alloc);
     }
@@ -298,7 +327,7 @@ pub const Mem = struct {
 
     const IteratorType = Iterator(*Record);
     // Creates a forward iterator to go through the wal.
-    fn getIterator(self: *Self, _: ?std.mem.Allocator) !IteratorType {
+    fn getIterator(self: *Self, _: ?Allocator) !IteratorType {
         const iter = IteratorType.init(self.mem[0..self.header.total_records]);
 
         return iter;
@@ -352,7 +381,7 @@ pub const File = struct {
     writer: ReaderWriterSeeker,
     current_offset: usize = 0,
 
-    alloc: std.mem.Allocator,
+    alloc: Allocator,
 
     pub const Type = Wal(
         File,
@@ -369,7 +398,7 @@ pub const File = struct {
         debug,
     );
 
-    pub fn init(size: usize, dm: *DiskManager, alloc: std.mem.Allocator) !Type {
+    pub fn init(size: usize, dm: *DiskManager, alloc: Allocator) !Type {
         var wal = try setup(size, dm, alloc);
         return .{ .ctx = wal };
     }
@@ -379,7 +408,7 @@ pub const File = struct {
     // for example after persisting it to disk.
     // CALL `deinitCascade()` if you want also to free all the records
     // stored in it.
-    fn setup(size: usize, dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
+    fn setup(size: usize, dm: *DiskManager, alloc: Allocator) !*Self {
         var wal = try alloc.create(File);
         errdefer alloc.destroy(wal);
 
@@ -436,7 +465,7 @@ pub const File = struct {
 
     // Compare the provided key with the ones in memory and
     // returns the last record that is found (or none if none is found)
-    pub fn find(self: *Self, key_to_find: []const u8, alloc: std.mem.Allocator) ?*Record {
+    pub fn find(self: *Self, key_to_find: []const u8, alloc: Allocator) ?*Record {
         var iter = self.getIterator() catch |err| {
             std.debug.print("Could not create iterator: {}\n", .{err});
             return null;
@@ -477,7 +506,7 @@ pub const File = struct {
     }
 
     // Creates a forward iterator to go through the wal.
-    pub fn getIterator(self: *Self, alloc: ?std.mem.Allocator) !BytesIterator {
+    pub fn getIterator(self: *Self, alloc: ?Allocator) !BytesIterator {
         if (alloc) |al| {
             return BytesIterator.init(self.writer, al);
         }
@@ -504,8 +533,8 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-// pub fn createWal(alloc: std.mem.Allocator) !Mem.Type {
-pub fn createWal(alloc: std.mem.Allocator) !Mem.Type {
+// pub fn createWal(alloc: Allocator) !Mem.Type {
+pub fn createWal(alloc: Allocator) !Mem.Type {
     var wal = try Mem.init(512, alloc);
 
     var buf1 = try alloc.alloc(u8, 10);

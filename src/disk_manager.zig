@@ -137,32 +137,22 @@ pub const DiskManager = struct {
 
     /// FREE the returned value
     pub fn getFilenames(self: *Self, ext: []const u8, alloc: std.mem.Allocator) ![][]const u8 {
-        // Read every file from self.folder_path
         log.debug("Reading folder: {s}", .{self.getAbsolutePath()});
+        var files = std.ArrayList([]const u8).init(alloc);
 
         var dirIterator = try std.fs.openIterableDirAbsolute(self.getAbsolutePath(), .{ .no_follow = true });
         defer dirIterator.close();
 
         var iterator = dirIterator.iterate();
 
-        var names = try alloc.alloc([]const u8, 64);
-
-        var i: usize = 0;
         const absolute_path = self.getAbsolutePath();
         while (try iterator.next()) |item| {
-            if (i % 64 == 0) {
-                _ = alloc.resize(names, names.len + 64);
-            }
-
             if (std.mem.eql(u8, item.name[item.name.len - 3 .. item.name.len], ext)) {
-                names[i] = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ absolute_path, item.name });
-                i += 1;
+                try files.append(try std.fmt.allocPrint(alloc, "{s}/{s}", .{ absolute_path, item.name }));
             }
         }
 
-        _ = alloc.resize(names, i);
-        names.len = i;
-        return names[0..i];
+        return try files.toOwnedSlice();
     }
 
     pub fn debug(dm: *Self) void {

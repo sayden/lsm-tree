@@ -240,6 +240,36 @@ pub fn SstManager(comptime WalType: type) type {
             self.alloc.destroy(self);
         }
 
+        /// startRecover attempts to recover a wal written on a file in a post crash scenario. If a
+        /// WAL is found it will write a SstIndex file with it, regardless of its current size.
+        /// Compaction at a later stage should deal with a scenario where the WAL is "too small"
+        fn startRecover(self: *Self, alloc: Allocator) void {
+            const file_entries = try self.dm.getFilenames("wal", self.alloc);
+            defer {
+                for (file_entries) |entry| {
+                    self.alloc.free(entry);
+                }
+                self.alloc.free(file_entries);
+            }
+
+            for (file_entries) |filename| {
+                log.debug("Trying to recover file {s}", .{filename});
+                var file = try std.fs.openFileAbsolute(filename, std.fs.File.OpenFlags{});
+                var rs = ReaderWriterSeeker.initFile(file);
+                var wal = try Wal.read(rs, alloc);
+                errdefer wal.deinit();
+
+                var filedata = try self.disk_manager.getNewFile("sst", alloc);
+                defer filedata.deinit();
+
+                var ws = ReaderWriterSeeker.initFile(filedata.file);
+                _ = try wal.persist(ws);
+
+                //finally delete the unfinished wal file
+                try std.fs.deleteFileAbsolute(filedata.filename);
+            }
+        }
+
         fn notifyNewIndexFileCreated(self: *Self, filename: []const u8) !void {
             var idx: *SstIndex = try SstIndex.init(filename, self.alloc);
             errdefer idx.deinit();
