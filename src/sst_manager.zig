@@ -64,6 +64,7 @@ pub const SstIndex = struct {
 
         for (0..header.total_records) |i| {
             var p = try Pointer.read(&ws, alloc);
+            errdefer p.deinit();
             pointers[i] = p;
         }
 
@@ -157,14 +158,14 @@ pub const SstIndex = struct {
     }
 };
 
-pub fn SstManager(comptime WalHandlerType: type) type {
+pub fn SstManager(comptime WalType: type) type {
     return struct {
         const Self = @This();
         const log = std.log.scoped(.SstManager);
 
         total_files: usize = 0,
 
-        wh: *WalHandlerType,
+        wh: *WalHandler(WalType),
         disk_manager: *DiskManager,
         first_pointer: *Pointer,
         last_pointer: *Pointer,
@@ -173,7 +174,7 @@ pub fn SstManager(comptime WalHandlerType: type) type {
 
         alloc: std.mem.Allocator,
 
-        pub fn init(wh: *WalHandlerType, dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
+        pub fn init(wh: *WalHandler(WalType), dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
             const file_entries = try dm.getFilenames("sst", alloc);
             defer {
                 for (file_entries) |entry| {
@@ -309,8 +310,18 @@ pub fn SstManager(comptime WalHandlerType: type) type {
             return IndexIterator.init(self.indices);
         }
 
+        pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
+            return self.wh.persistCurrent(alloc);
+        }
+
+        // checks if key is in the range of keys
+        pub fn isBetween(self: *Self, key: []const u8) bool {
+            return strcmp(key, self.first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
+        }
+
         pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !FileData {
             const combined_size = idx1.size() + idx2.size();
+            const level = idx1.header.level + 1;
             var wal = try Wal.Mem.init(combined_size, alloc);
             defer wal.deinit();
 
@@ -330,18 +341,24 @@ pub fn SstManager(comptime WalHandlerType: type) type {
                 try wal.appendOwn(r);
             }
 
+            wal.ctx.header.level = level;
             const file_data = try self.wh.persist(wal);
             try self.notifyNewIndexCreated(file_data.filename);
             return file_data;
         }
 
-        pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
-            return self.wh.persistCurrent(alloc);
-        }
+        fn indicesHaveOverlappingKeys(level: u8, id1: *SstIndex, id2: *SstIndex) bool {
+            if (id1.header.level == level and id2.header.level == level) {
+                if (strcmp(id1.last_pointer.key, id2.first_pointer.key) == Order.gt) {
+                    return true;
+                }
 
-        // checks if key is in the range of keys
-        pub fn isBetween(self: *Self, key: []const u8) bool {
-            return strcmp(key, self.first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
+                if (strcmp(id2.last_pointer.key, id1.first_pointer.key) == Order.gt) {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
@@ -363,7 +380,7 @@ const allocPrint = std.fmt.allocPrint;
 const testObj = struct {
     const WalType = Wal.Mem;
     const WalHandlerType = WalHandler(WalType);
-    const SstManagerType = SstManager(WalHandlerType);
+    const SstManagerType = SstManager(WalType);
 
     dm: *DiskManager,
     wh: *WalHandlerType,
@@ -531,6 +548,36 @@ test "sstmanager_notify_new_index" {
     } else {
         try std.testing.expect(false);
     }
+}
+
+test "sst_manager_are_overlapping" {
+    var alloc = std.testing.allocator;
+
+    var t1 = try testObj.setup(alloc);
+    defer t1.teardown();
+
+    var t2 = try testObj.setup(alloc);
+    defer t2.teardown();
+
+    var idx1 = t1.s.indices[0];
+    var idx2 = t2.s.indices[0];
+
+    var key1 = try alloc.dupe(u8, "hello50");
+    var key2 = try alloc.dupe(u8, "hello0");
+    var key3 = try alloc.dupe(u8, "hello100");
+    var key4 = try alloc.dupe(u8, "hello25");
+
+    alloc.free(idx1.last_pointer.key);
+    alloc.free(idx1.first_pointer.key);
+    idx1.last_pointer.key = key1;
+    idx1.first_pointer.key = key2;
+
+    alloc.free(idx2.last_pointer.key);
+    alloc.free(idx2.first_pointer.key);
+    idx2.last_pointer.key = key3;
+    idx2.first_pointer.key = key4;
+
+    try std.testing.expect(SstManager(Wal.Mem).indicesHaveOverlappingKeys(idx1, idx2));
 }
 
 test "sstmanager_compact_indices" {
