@@ -1,6 +1,7 @@
 const std = @import("std");
 const pkgs = @import("deps.zig").pkgs;
 const Pkg = std.build.Pkg;
+const nanoid = @import("./src/pkg/zig-nanoid/build.zig");
 
 pub fn build(b: *std.build.Builder) void {
     // Standard target options allows the person running `zig build` to choose
@@ -15,10 +16,13 @@ pub fn build(b: *std.build.Builder) void {
 
     const exe = b.addExecutable("lsmtree", "src/main.zig");
     const root = Pkg{ .name = "lsmtree", .path = .{ .path = "src/main.zig" } };
-    const strings = Pkg{ .name = "strings", .path = .{ .path = "src/pkg/strings/strings.zig" } };
-    const serialize = Pkg{ .name = "serialize", .path = .{ .path = "src/serialize/main.zig" }, .dependencies = &[_]Pkg{root} };
+    const strings = Pkg{ .name = "strings", .path = .{ .path = "./src/pkg/pkg/strings/strings.zig" } };
+    const serialize = Pkg{ .name = "serialize", .path = .{ .path = "./src/pkg/serialize/main.zig" }, .dependencies = &[_]Pkg{root} };
+    // const nanoid = Pkg{ .name = "nanoid", .path = .{ .path = "./src/pkg/nanoid/build.zig" }, .dependencies = &[_]Pkg{root} };
+
     exe.addPackage(strings);
     exe.addPackage(serialize);
+    exe.addPackage(nanoid.getPackage("nanoid"));
 
     exe.setTarget(target);
     exe.setBuildMode(mode);

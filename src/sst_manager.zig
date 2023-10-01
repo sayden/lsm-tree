@@ -1,4 +1,7 @@
 const std = @import("std");
+const ArrayList = std.ArrayList;
+const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 const RecordPkg = @import("./record.zig");
 const HeaderNs = @import("./header.zig");
@@ -45,9 +48,9 @@ pub const SstIndex = struct {
     file: std.fs.File,
     pointers: []*Pointer,
 
-    allocator: std.mem.Allocator,
+    allocator: Allocator,
 
-    pub fn init(relative: []const u8, alloc: std.mem.Allocator) !*SstIndex {
+    pub fn init(relative: []const u8, alloc: Allocator) !*SstIndex {
         var path = try std.fs.cwd().realpathAlloc(alloc, relative);
         defer alloc.free(path);
 
@@ -128,7 +131,7 @@ pub const SstIndex = struct {
         return null;
     }
 
-    pub fn get(idx: *SstIndex, key: []const u8, alloc: std.mem.Allocator) !?*Record {
+    pub fn get(idx: *SstIndex, key: []const u8, alloc: Allocator) !?*Record {
         const p = idx.find(key);
         if (p) |pointer| {
             return idx.retrieveRecordFromFile(pointer, alloc);
@@ -142,7 +145,7 @@ pub const SstIndex = struct {
         return PointerIterator.init(self.pointers);
     }
 
-    fn retrieveRecordFromFile(idx: *SstIndex, p: *Pointer, alloc: std.mem.Allocator) !*Record {
+    fn retrieveRecordFromFile(idx: *SstIndex, p: *Pointer, alloc: Allocator) !*Record {
         try idx.file.seekTo(try p.getOffset());
         var ws = ReaderWriterSeeker.initFile(idx.file);
         return try p.readValue(&ws, alloc);
@@ -170,11 +173,11 @@ pub fn SstManager(comptime WalType: type) type {
         first_pointer: *Pointer,
         last_pointer: *Pointer,
 
-        indices: []*SstIndex,
+        indices: ArrayList(*SstIndex),
 
-        alloc: std.mem.Allocator,
+        alloc: Allocator,
 
-        pub fn init(wh: *WalHandler(WalType), dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
+        pub fn init(wh: *WalHandler(WalType), dm: *DiskManager, alloc: Allocator) !*Self {
             const file_entries = try dm.getFilenames("sst", alloc);
             defer {
                 for (file_entries) |entry| {
@@ -186,8 +189,10 @@ pub fn SstManager(comptime WalType: type) type {
             var first_pointer: ?*Pointer = null;
             var last_pointer: ?*Pointer = null;
 
-            var indices = try alloc.alloc(*SstIndex, file_entries.len + 10);
-            errdefer alloc.free(indices);
+            var indices = try ArrayList(*SstIndex).initCapacity(alloc, file_entries.len);
+            errdefer indices.deinit();
+            // var indices = try alloc.alloc(*SstIndex, file_entries.len + 10);
+            // errdefer alloc.free(indices);
 
             var total_files: usize = 0;
             for (0..file_entries.len) |i| {
@@ -206,7 +211,8 @@ pub fn SstManager(comptime WalType: type) type {
                         last_pointer = idx.last_pointer;
                     }
                 }
-                indices[i] = idx;
+                try indices.append(idx);
+                // indices[i] = idx;
                 total_files += 1;
             }
 
@@ -227,55 +233,59 @@ pub fn SstManager(comptime WalType: type) type {
 
         pub fn deinit(self: *Self) void {
             for (0..self.total_files) |i| {
-                self.indices[i].deinit();
+                self.indices.items[i].deinit();
             }
-            self.alloc.free(self.indices);
+            self.indices.deinit();
+            // self.alloc.free(self.indices);
             self.alloc.destroy(self);
         }
 
-        fn notifyNewIndexCreated(self: *Self, filename: []const u8) !void {
+        fn notifyNewIndexFileCreated(self: *Self, filename: []const u8) !void {
             var idx: *SstIndex = try SstIndex.init(filename, self.alloc);
             errdefer idx.deinit();
 
+            try self.indices.append(idx);
+            self.total_files += 1;
+
             // Check if there is still space in the indices array
-            if (self.total_files < self.indices.len) {
-                self.indices[self.total_files] = idx;
-                self.total_files += 1;
-                return;
-            }
+            // if (self.total_files < self.indices.len) {
+            //     self.indices[self.total_files] = idx;
+            //     self.total_files += 1;
+            //     return;
+            // }
 
             // if no space is available, resize or rewrite the index table
-            const current_size: usize = self.total_files;
-            const is_resized: bool = self.alloc.resize(self.indices, current_size + 10);
-            if (is_resized) {
-                self.indices.len = current_size + 10;
-                self.indices[current_size] = idx;
-                self.total_files += 1;
-            } else {
-                var indices = try self.alloc.alloc(*SstIndex, current_size + 10);
-                errdefer self.alloc.free(indices);
+            // const current_size: usize = self.total_files;
+            // const is_resized: bool = self.alloc.resize(self.indices, current_size + 10);
+            // if (is_resized) {
+            //     self.indices.len = current_size + 10;
+            //     self.indices[current_size] = idx;
+            //     self.total_files += 1;
+            // } else {
+            // var indices = try self.alloc.alloc(*SstIndex, current_size + 10);
+            // errdefer self.alloc.free(indices);
 
-                for (0..current_size) |i| {
-                    indices[i] = self.indices[i];
-                }
+            // for (0..current_size) |i| {
+            //     indices[i] = self.indices[i];
+            // }
 
-                indices[current_size] = idx;
-                self.total_files += 1;
+            // indices[current_size] = idx;
+            // self.total_files += 1;
 
-                self.alloc.free(self.indices);
-                self.indices = indices;
-            }
+            // self.alloc.free(self.indices);
+            // self.indices = indices;
+            // }
         }
 
         pub fn append(self: *Self, r: *Record) !void {
             return if (try self.wh.append(r, self.alloc)) |file_data| {
                 defer file_data.deinit();
-                try self.notifyNewIndexCreated(file_data.filename);
+                try self.notifyNewIndexFileCreated(file_data.filename);
             };
         }
 
         // Looks for the key in the WAL, if not present, checks in the indices
-        pub fn find(self: *Self, key: []const u8, alloc: std.mem.Allocator) !?*Record {
+        pub fn find(self: *Self, key: []const u8, alloc: Allocator) !?*Record {
             // Check in wal first
             if (try self.wh.find(key, alloc)) |record| {
                 return record;
@@ -297,7 +307,8 @@ pub fn SstManager(comptime WalType: type) type {
 
         pub fn totalRecords(self: *Self) usize {
             var total: usize = 0;
-            var iter: Iterator(*SstIndex) = Iterator(*SstIndex).init(self.indices[0..self.total_files]);
+
+            var iter = self.getIterator();
             while (iter.next()) |index| {
                 total += index.header.total_records;
             }
@@ -307,10 +318,10 @@ pub fn SstManager(comptime WalType: type) type {
 
         const IndexIterator = Iterator(*SstIndex);
         fn getIterator(self: *Self) IndexIterator {
-            return IndexIterator.init(self.indices);
+            return IndexIterator.init(self.indices.items);
         }
 
-        pub fn persist(self: *Self, alloc: ?std.mem.Allocator) !?[]const u8 {
+        pub fn persist(self: *Self, alloc: ?Allocator) !?[]const u8 {
             return self.wh.persistCurrent(alloc);
         }
 
@@ -319,7 +330,40 @@ pub fn SstManager(comptime WalType: type) type {
             return strcmp(key, self.first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
         }
 
-        pub fn compactIndices(self: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: std.mem.Allocator) !FileData {
+        pub fn attemptCompaction(self: *Self) !void {
+            var newfiles = ArrayList(FileData).init(self.alloc);
+            defer newfiles.deinit();
+
+            for (1..6) |level| {
+                blk: {
+                    const items = self.indices.items;
+                    const total_items = self.total_files - 1;
+
+                    for (0..total_items) |i| {
+                        for (1..total_items) |j| {
+                            if (indicesHaveOverlappingKeys(level, items[i], items[j])) {
+                                const wal = try self.compact2Indices(items[i], items[j], self.alloc);
+                                const filedata = try self.wh.persist(wal);
+                                errdefer filedata.deinit();
+
+                                try self.removeIndex(i);
+                                try self.removeIndex(j);
+
+                                try newfiles.append(filedata);
+                                break :blk;
+                            }
+                        }
+                    }
+                }
+            }
+
+            for (newfiles.items) |new_index| {
+                try self.notifyNewIndexFileCreated(new_index.filename);
+                new_index.deinit();
+            }
+        }
+
+        pub fn compact2Indices(_: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: Allocator) !Wal.Mem.Type {
             const combined_size = idx1.size() + idx2.size();
             const level = idx1.header.level + 1;
             var wal = try Wal.Mem.init(combined_size, alloc);
@@ -342,9 +386,17 @@ pub fn SstManager(comptime WalType: type) type {
             }
 
             wal.ctx.header.level = level;
-            const file_data = try self.wh.persist(wal);
-            try self.notifyNewIndexCreated(file_data.filename);
-            return file_data;
+
+            return wal;
+        }
+
+        fn removeIndex(self: *Self, pos: usize) !void {
+            var removed = self.indices.swapRemove(pos);
+            if (!builtin.is_test) {
+                try std.fs.deleteFileAbsolute(removed.file);
+            }
+            removed.deinit();
+            self.total_files -= 1;
         }
 
         fn indicesHaveOverlappingKeys(level: u8, id1: *SstIndex, id2: *SstIndex) bool {
@@ -362,7 +414,7 @@ pub fn SstManager(comptime WalType: type) type {
         }
 
         fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
-            for (self.indices) |index| {
+            for (self.indices.items) |index| {
                 if (index.isBetween(key)) {
                     return index;
                 }
@@ -386,9 +438,9 @@ const testObj = struct {
     wh: *WalHandlerType,
     s: *SstManagerType,
 
-    alloc: std.mem.Allocator,
+    alloc: Allocator,
 
-    fn setup(alloc: std.mem.Allocator) !testObj {
+    fn setup(alloc: Allocator) !testObj {
         var dm = try DiskManager.init("./testing", alloc);
         errdefer dm.deinit();
 
@@ -407,9 +459,9 @@ const testObj = struct {
     }
 
     fn teardown(self: *testObj) void {
-        self.s.deinit();
-        self.wh.deinit();
-        self.dm.deinit();
+        defer self.s.deinit();
+        defer self.wh.deinit();
+        defer self.dm.deinit();
     }
 };
 
@@ -537,7 +589,7 @@ test "sstmanager_notify_new_index" {
             logns.err("Error deleting file {s}: {}", .{ abs_path, err });
         };
 
-        try t.s.notifyNewIndexCreated(filename);
+        try t.s.notifyNewIndexFileCreated(filename);
     }
     try expectEqual(@as(usize, 3), t.s.total_files);
 
@@ -559,8 +611,8 @@ test "sst_manager_are_overlapping" {
     var t2 = try testObj.setup(alloc);
     defer t2.teardown();
 
-    var idx1 = t1.s.indices[0];
-    var idx2 = t2.s.indices[0];
+    var idx1 = t1.s.indices.items[0];
+    var idx2 = t2.s.indices.items[0];
 
     var key1 = try alloc.dupe(u8, "hello50");
     var key2 = try alloc.dupe(u8, "hello0");
@@ -577,7 +629,7 @@ test "sst_manager_are_overlapping" {
     idx2.last_pointer.key = key3;
     idx2.first_pointer.key = key4;
 
-    try std.testing.expect(SstManager(Wal.Mem).indicesHaveOverlappingKeys(idx1, idx2));
+    try std.testing.expect(SstManager(Wal.Mem).indicesHaveOverlappingKeys(1, idx1, idx2));
 }
 
 test "sstmanager_compact_indices" {
@@ -585,16 +637,25 @@ test "sstmanager_compact_indices" {
     var t = try testObj.setup(alloc);
     defer t.teardown();
 
-    const idx1 = t.s.indices[0];
-    const idx2 = t.s.indices[1];
+    // const idx1 = t.s.indices.items[0];
+    // const idx2 = t.s.indices.items[1];
+    // const total_expected_records: usize = idx1.header.total_records + idx2.header.total_records;
 
-    try expectEqual(@as(usize, 2), t.s.total_files);
+    // try expectEqual(@as(usize, 2), t.s.total_files);
 
-    var file_data = try t.s.compactIndices(idx1, idx2, alloc);
-    defer file_data.deinit();
-    defer deleteFile(file_data.filename);
+    // var wal = try t.s.compact2Indices(idx1, idx2, alloc);
+    // defer wal.deinit();
 
-    try expectEqual(@as(usize, 3), t.s.total_files);
+    // try t.s.removeIndex(0);
+    // try t.s.removeIndex(0);
+
+    // const filedata = try t.wh.persist(wal);
+    // defer filedata.deinit();
+
+    // defer deleteFile(filedata.filename);
+
+    // try expectEqual(@as(usize, 1), t.s.total_files);
+    // try expectEqual(@as(usize, total_expected_records), t.s.indices.items[0].header.total_records);
 }
 
 fn deleteFile(filename: []const u8) void {

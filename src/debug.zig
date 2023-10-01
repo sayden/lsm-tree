@@ -4,6 +4,7 @@ const HeaderNs = @import("./header.zig");
 const Header = HeaderNs.Header;
 const Record = @import("./record.zig").Record;
 const Pointer = @import("./pointer.zig").Pointer;
+const ReadWriteSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 pub fn println(s: anytype) void {
     std.debug.print("{}\n", .{s});
@@ -60,16 +61,19 @@ pub fn main() !void {
     var file = try std.fs.openFileAbsolute(abs_path, std.fs.File.OpenFlags{ .mode = .read_only });
     defer file.close();
 
-    var h = try Header.read(&file);
+    var rs = ReadWriteSeeker.initFile(file);
+    var h = try Header.read(&rs);
 
-    std.debug.print("\n------\nHeader\n------\n", .{});
-    std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
-    std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });
-    std.debug.print("Reserved: {s}\n", .{h.reserved});
+    h.debug();
 
-    const pointer = try Pointer.read(&file, alloc);
+    // std.debug.print("\n------\nHeader\n------\n", .{});
+    // std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
+    // std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });
+    // std.debug.print("Reserved: {s}\n", .{h.reserved});
+
+    const pointer = try Pointer.read(&rs, alloc);
     try file.seekTo(0);
-    const record = try pointer.readValue(&file, alloc);
+    const record = try pointer.readValue(&rs, alloc);
     defer record.deinit();
     pointer.debug();
     record.debug();
