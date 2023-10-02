@@ -24,6 +24,7 @@ pub fn main() !void {
     const params = comptime clap.parseParamsComptime(
         \\-h, --help             Display this help and exit.
         \\-e, --header <str>   An option parameter, which takes a value.
+        \\-w, --wal <str>      An option parameter, which takes a value.
         \\<str>...
         \\
     );
@@ -66,15 +67,11 @@ pub fn main() !void {
 
     h.debug();
 
-    // std.debug.print("\n------\nHeader\n------\n", .{});
-    // std.debug.print("Magic number:\t\t{}\nTotal records:\t\t{}\nFirst pointer offset:\t{}\n", .{ h.magic_number, h.total_records, h.first_pointer_offset });
-    // std.debug.print("Last pointer offset:\t{}\nRecords size:\t\t{}\n", .{ h.last_pointer_offset, h.records_size });
-    // std.debug.print("Reserved: {s}\n", .{h.reserved});
-
     const pointer = try Pointer.read(&rs, alloc);
-    try file.seekTo(0);
+
     const record = try pointer.readValue(&rs, alloc);
     defer record.deinit();
+
     pointer.debug();
     record.debug();
 }

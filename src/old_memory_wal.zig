@@ -268,21 +268,6 @@ test "wal_iterator" {
     try expectEqualStrings("world3", record.?.value);
 }
 
-test "wal_lexicographical_compare" {
-    var alloc = std.testing.allocator;
-
-    var wal = try MemoryWal(2048).init(alloc);
-    defer wal.deinit();
-
-    for (0..7) |i| {
-        var key = try std.fmt.allocPrint(alloc, "hello{}", .{i});
-        var val = try std.fmt.allocPrint(alloc, "world{}", .{i});
-        try wal.appendOwn(try Record.init(key, val, Op.Create, alloc));
-        alloc.free(key);
-        alloc.free(val);
-    }
-}
-
 test "wal_add_record" {
     var alloc = std.testing.allocator;
 

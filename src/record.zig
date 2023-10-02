@@ -4,7 +4,7 @@ const lsmtree = @import("./record.zig");
 const Pointer = @import("./pointer.zig").Pointer;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
-pub const RecordError = error{ BufferTooSmall, KeyTooBig };
+pub const Error = error{ BufferTooSmall, KeyTooBig, UnexpectedRecordLength };
 pub const RecordLengthType: type = usize;
 pub const KeyLengthType: type = u16;
 
@@ -24,6 +24,7 @@ pub const Record = struct {
     pointer: *Pointer,
 
     value: []u8,
+    ts: i128,
 
     allocator: std.mem.Allocator,
 
@@ -44,6 +45,7 @@ pub const Record = struct {
             .pointer = pointer,
             .value = value_,
             .allocator = alloc,
+            .ts = std.time.nanoTimestamp(),
         };
 
         return new_record;
@@ -63,19 +65,22 @@ pub const Record = struct {
         return self.pointer.write(ws);
     }
 
+    /// writes the value of the record in the format `op + val length + value + ts`
     pub fn write(self: *Self, ws: *ReaderWriterSeeker) !usize {
         var bytes_written: usize = 0;
         var op = [_]u8{@intFromEnum(self.pointer.op)};
 
         bytes_written += try ws.write(&op);
 
-        // Write N bytes to indicate the total size of the record. N is defined as the number of bytes
-        // that a type RecordLengthType can store (8 for u64, 4 for a u32, etc.)
+        // Indicate the size of the value of the record (op+val length+value+ts)
         try ws.writeIntLittle(RecordLengthType, self.valueLen());
         bytes_written += @sizeOf(RecordLengthType);
 
         try ws.writeAll(self.value);
         bytes_written += self.value.len;
+
+        try ws.writeIntLittle(i128, self.ts);
+        bytes_written += @sizeOf(i128);
 
         return bytes_written;
     }
@@ -86,18 +91,24 @@ pub const Record = struct {
         r.pointer.op = @as(Op, @enumFromInt(try rs.readByte()));
         var bytes_written: usize = 1;
 
-        //Read the record length bytes (4 or 8 usually) to get the total length of the record
+        //Read the record length to get the total length of the record
         const record_length = try rs.readIntLittle(RecordLengthType);
         bytes_written += @sizeOf(RecordLengthType);
 
-        // read as many bytes as are left to get the value
-        const value_length = record_length - @sizeOf(RecordLengthType) - 1;
+        if (record_length <= 0) {
+            return Error.UnexpectedRecordLength;
+        }
+
+        // We store the total size of the Record Value (op+val length+value+ts), but not of the data itself.
+        const value_length = record_length - @sizeOf(RecordLengthType) - 1 - @sizeOf(i128);
 
         r.value = try alloc.alloc(u8, value_length);
         errdefer alloc.free(r.value);
 
         _ = try rs.readAtLeast(r.value, value_length);
         bytes_written += value_length;
+
+        r.ts = try rs.readIntLittle(i128);
 
         r.allocator = alloc;
 
@@ -118,21 +129,22 @@ pub const Record = struct {
             .pointer = pointer,
             .value = value,
             .allocator = alloc,
+            .ts = r.ts,
         };
 
         return new_record;
     }
 
-    /// Length in bytes of the record, pointer included
+    /// Length in bytes of the record, pointer NOT included
     pub fn valueLen(self: *Self) usize {
         const record_len_type_len = @sizeOf(RecordLengthType);
 
         // Total
-        var record_size_in_bytes = 1 + record_len_type_len + self.value.len;
+        var record_size_in_bytes = 1 + record_len_type_len + self.value.len + @sizeOf(i128);
         return record_size_in_bytes;
     }
 
-    /// Length in bytes of the value, pointer NOT included
+    /// Length in bytes of the value, pointer included
     pub fn len(self: *Self) usize {
         return self.valueLen() + self.pointer.len();
     }
@@ -154,7 +166,9 @@ pub const Record = struct {
     }
 
     pub fn debug(self: *Self) void {
-        std.debug.print("\n-------\nRecord:\n-------\nOp:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\nVsize:\t{}\nOffset:\t{?}\n\n", .{ self.pointer.op, self.pointer.key, self.value, self.len(), self.valueLen(), self.pointer.offset });
+        std.debug.print("\n-------\nRecord:\n-------\nOp:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\nVsize:\t{}\nOffset:\t{?}\nTS:\t{}\n", .{
+            self.pointer.op, self.pointer.key, self.value, self.len(), self.valueLen(), self.pointer.offset, self.ts,
+        });
     }
 };
 
@@ -169,8 +183,8 @@ test "record_init" {
     var r = try Record.init("hell0", "world1", Op.Update, alloc);
     defer r.deinit();
 
-    try expectEq(@as(usize, 15), r.valueLen());
-    try expectEq(@as(usize, 31), r.len());
+    try expectEq(@as(usize, 31), r.valueLen());
+    try expectEq(@as(usize, 47), r.len());
 
     try expectEqualStrings("hell0", r.pointer.key);
     try expectEqualStrings("world1", r.value);
@@ -183,8 +197,8 @@ test "record_len" {
     const r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
-    try expectEq(@as(usize, 14), r.valueLen());
-    try expectEq(@as(usize, 30), r.len());
+    try expectEq(@as(usize, 30), r.valueLen());
+    try expectEq(@as(usize, 46), r.len());
 }
 
 test "record_pointerSize" {
@@ -224,7 +238,7 @@ test "record_write_readValues" {
 
     // write the first record and second record
     const value_bytes_written = try record1.write(ws);
-    try expectEq(@as(usize, 14), value_bytes_written);
+    try expectEq(@as(usize, 30), value_bytes_written);
     _ = try record2.write(ws);
 
     try ws.seekTo(0);

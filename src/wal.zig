@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const RecordNs = @import("./record.zig");
 const Op = @import("./ops.zig").Op;
 const Record = RecordNs.Record;
-const RecordError = RecordNs.RecordError;
+const RecordError = RecordNs.Error;
 const HeaderNs = @import("./header.zig");
 const Header = HeaderNs.Header;
 const lsmtree = @import("./main.zig");
@@ -27,9 +27,12 @@ pub const Error = error{
     MaxSizeReached,
     CantCreateRecord,
     EmptyWal,
+    ErrorWritingPointer,
+    ErrorWritingValue,
 } || RecordError || Allocator.Error;
 
 pub const initial_wal_size = 32000;
+const logns = std.log.scoped(.SstManager);
 
 pub fn Wal(
     comptime Context: type,
@@ -118,12 +121,6 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
 
     std.sort.insertion(*Record, records[0..header.total_records], {}, lexicographical_compare);
 
-    // Write first and last pointer in the header. We cannot write this before
-    // because we need to know their offsets after writing. It can be calculated
-    // now, but maybe not later if compression comes in place
-    header.first_pointer_offset = HeaderNs.headerSize();
-    header.last_pointer_offset = header.pointers_size + HeaderNs.headerSize() - records[header.total_records - 1].pointerSize();
-
     try ws.seekTo(HeaderNs.headerSize());
 
     // Move offset after header, which will be written later
@@ -132,10 +129,22 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
     var written: usize = 0;
     // Write pointer
     for (0..header.total_records) |i| {
-        records[i].pointer.offset = record_offset;
-        written += try records[i].writePointer(ws);
+        var record = records[i];
+        if (record.pointer.op == Op.Skip) {
+            continue;
+        }
+        if ((record.pointer.op == Op.Create or record.pointer.op == Op.Update) and i > 0) {
+            // if previous record has the same id, skip it. Else, the record is somewhere else
+            // and the update/delete operation will happen in compaction
+            if (std.mem.eql(u8, records[i - 1].pointer.key, record.pointer.key)) {
+                records[i - 1].pointer.op = Op.Skip;
+            }
+        }
 
-        record_offset += records[i].valueLen();
+        record.pointer.offset = record_offset;
+        written += try record.writePointer(ws);
+
+        record_offset += record.valueLen();
     }
 
     // Write records
@@ -143,6 +152,12 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
         // records[i].pointer.offset = record_offset;
         written += try records[i].write(ws);
     }
+
+    // Write first and last pointer in the header. We cannot write this before
+    // because we need to know their offsets after writing. It can be calculated
+    // now, but maybe not later if compression comes in place
+    header.first_pointer_offset = HeaderNs.headerSize();
+    header.last_pointer_offset = header.pointers_size + HeaderNs.headerSize() - records[header.total_records - 1].pointerSize();
 
     // Write the header
     try ws.seekTo(0);
@@ -189,32 +204,53 @@ pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record 
 
 pub fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
     const res = strcmp(lhs.pointer.key, rhs.pointer.key);
+    if (res == Math.Order.eq) {
+        return @intFromEnum(lhs.pointer.op) < @intFromEnum(rhs.pointer.op);
+    }
     return res.compare(Math.CompareOperator.lte);
 }
 
 pub fn read(rs: *ReaderWriterSeeker, alloc: Allocator) !Mem.Type {
     var wal = try Mem.init(initial_wal_size, alloc);
-    errdefer wal.deinit();
 
-    // Header is not included into a File WAL
+    try rs.seekTo(HeaderNs.headerSize());
 
     while (true) {
-        var p = try Pointer.read(rs, alloc);
-        errdefer p.deinit();
-
-        const r = try p.readValue(rs, alloc) catch |err| {
+        var p = Pointer.read(rs, alloc) catch |err| {
             switch (err) {
-                std.os.SeekError => {
-                    p.deinit();
+                std.os.SeekError.Unseekable, error.EndOfStream, error.OutOfMemory => {
                     break;
                 },
-                else => return err,
+                else => {
+                    logns.err("Unexpected error trying to recover wal file: {}", .{err});
+                    return err;
+                },
             }
         };
+
+        const r = p.readValueReusePointer(rs, alloc) catch |err| {
+            p.deinit();
+
+            switch (err) {
+                std.os.SeekError.Unseekable, error.EndOfStream, error.OutOfMemory => {
+                    break;
+                },
+                RecordNs.Error.UnexpectedRecordLength => {
+                    break;
+                },
+                else => {
+                    logns.err("Unexpected error trying to recover wal file: {}", .{err});
+                    return err;
+                },
+            }
+        };
+
         errdefer r.deinit();
 
-        try wal.append(r);
+        try wal.appendOwn(r);
     }
+
+    logns.info("Found {} records", .{wal.ctx.header.total_records});
 
     return wal;
 }
@@ -379,7 +415,7 @@ pub const File = struct {
     header: Header,
     file: std.fs.File,
     writer: ReaderWriterSeeker,
-    current_offset: usize = 0,
+    current_offset: usize = HeaderNs.headerSize(),
 
     alloc: Allocator,
 
@@ -434,14 +470,6 @@ pub const File = struct {
     pub fn deinit(self: *Self) void {
         defer self.alloc.destroy(self);
         defer self.file.close();
-
-        self.writer.seekTo(0) catch |err| {
-            log.err("{}", .{err});
-        };
-
-        _ = self.header.write(&self.writer) catch |err| {
-            log.err("{}", .{err});
-        };
     }
 
     pub fn appendKv(self: *Self, k: []const u8, v: []const u8) !void {
@@ -451,14 +479,25 @@ pub const File = struct {
     pub fn append(self: *Self, r: *Record) Error!void {
         try preAppend(self, r);
 
-        r.pointer.offset = r.pointer.len() + self.current_offset;
-        _ = try r.writePointer(&self.writer);
-        _ = try r.write(&self.writer);
+        self.current_offset += r.pointer.len();
+        r.pointer.offset = self.current_offset;
+
+        _ = r.writePointer(&self.writer) catch |err| {
+            log.err("{}", .{err});
+            return Error.ErrorWritingPointer;
+        };
+
+        _ = r.write(&self.writer) catch |err| {
+            log.err("{}", .{err});
+            return Error.ErrorWritingValue;
+        };
+
+        self.current_offset += r.valueLen();
 
         postAppend(&self.header, r);
     }
 
-    pub fn appendOwn(self: *Self, r: *Record) !void {
+    pub fn appendOwn(self: *Self, r: *Record) Error!void {
         defer r.deinit();
         try self.append(r);
     }
@@ -535,7 +574,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 
 // pub fn createWal(alloc: Allocator) !Mem.Type {
 pub fn createWal(alloc: Allocator) !Mem.Type {
-    var wal = try Mem.init(512, alloc);
+    var wal = try Mem.init(1024, alloc);
 
     var buf1 = try alloc.alloc(u8, 10);
     var buf2 = try alloc.alloc(u8, 10);
@@ -548,10 +587,27 @@ pub fn createWal(alloc: Allocator) !Mem.Type {
 
         const r = try Record.init(key, val, Op.Create, alloc);
         defer r.deinit();
+
         try wal.append(r);
     }
 
     return wal;
+}
+
+test "wal_lexicographical_compare" {
+    var alloc = std.testing.allocator;
+
+    var r1 = try Record.init("hello0", "world00", Op.Create, alloc);
+    var r2 = try Record.init("hello0", "world01", Op.Update, alloc);
+    defer r1.deinit();
+    defer r2.deinit();
+
+    try expect(lexicographical_compare({}, r1, r2));
+
+    var r3 = try Record.init("hello", "world0000", Op.Delete, alloc);
+    defer r3.deinit();
+
+    try expect(lexicographical_compare({}, r3, r1));
 }
 
 test "wal_find_a_key" {

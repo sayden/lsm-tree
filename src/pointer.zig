@@ -108,6 +108,8 @@ pub const Pointer = struct {
 
     pub fn readValueReusePointer(p: *Pointer, ws: *ReaderWriterSeeker, alloc: std.mem.Allocator) !*Record {
         var r: *Record = try alloc.create(Record);
+        errdefer r.deinit();
+
         r.pointer = p;
 
         _ = try r.read(ws, alloc);

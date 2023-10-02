@@ -174,14 +174,19 @@ pub fn SstManager(comptime WalType: type) type {
 
         wh: *WalHandler(WalType),
         disk_manager: *DiskManager,
-        first_pointer: *Pointer,
-        last_pointer: *Pointer,
+
+        // Those 2 probably needs to be null to support the use case where the
+        // sstmanager do not have any index yet (so no first and last pointer)
+        first_pointer: ?*Pointer,
+        last_pointer: ?*Pointer,
 
         indices: ArrayList(*SstIndex),
 
         alloc: Allocator,
 
         pub fn init(wh: *WalHandler(WalType), dm: *DiskManager, alloc: Allocator) !*Self {
+            try startRecover(dm, alloc);
+
             const file_entries = try dm.getFilenames("sst", alloc);
             defer {
                 for (file_entries) |entry| {
@@ -189,6 +194,8 @@ pub fn SstManager(comptime WalType: type) type {
                 }
                 alloc.free(file_entries);
             }
+            log.debug("Found {} SST Files", .{file_entries.len});
+            if (file_entries.len == 0) {}
 
             var first_pointer: ?*Pointer = null;
             var last_pointer: ?*Pointer = null;
@@ -196,7 +203,6 @@ pub fn SstManager(comptime WalType: type) type {
             var indices = try ArrayList(*SstIndex).initCapacity(alloc, file_entries.len);
             errdefer indices.deinit();
 
-            var total_files: usize = 0;
             for (0..file_entries.len) |i| {
                 var idx = try SstIndex.init(file_entries[i], alloc);
                 errdefer idx.deinit();
@@ -214,7 +220,6 @@ pub fn SstManager(comptime WalType: type) type {
                     }
                 }
                 try indices.append(idx);
-                total_files += 1;
             }
 
             var mng: *Self = try alloc.create(Self);
@@ -224,9 +229,9 @@ pub fn SstManager(comptime WalType: type) type {
                 .alloc = alloc,
                 .disk_manager = dm,
                 .wh = wh,
-                .first_pointer = first_pointer.?,
-                .last_pointer = last_pointer.?,
-                .total_files = total_files,
+                .first_pointer = first_pointer,
+                .last_pointer = last_pointer,
+                .total_files = file_entries.len,
             };
 
             return mng;
@@ -243,30 +248,31 @@ pub fn SstManager(comptime WalType: type) type {
         /// startRecover attempts to recover a wal written on a file in a post crash scenario. If a
         /// WAL is found it will write a SstIndex file with it, regardless of its current size.
         /// Compaction at a later stage should deal with a scenario where the WAL is "too small"
-        fn startRecover(self: *Self, alloc: Allocator) void {
-            const file_entries = try self.dm.getFilenames("wal", self.alloc);
+        fn startRecover(dm: *DiskManager, alloc: Allocator) !void {
+            const file_entries = try dm.getFilenames("wal", alloc);
             defer {
                 for (file_entries) |entry| {
-                    self.alloc.free(entry);
+                    alloc.free(entry);
                 }
-                self.alloc.free(file_entries);
+                alloc.free(file_entries);
             }
 
             for (file_entries) |filename| {
                 log.debug("Trying to recover file {s}", .{filename});
+
                 var file = try std.fs.openFileAbsolute(filename, std.fs.File.OpenFlags{});
                 var rs = ReaderWriterSeeker.initFile(file);
-                var wal = try Wal.read(rs, alloc);
-                errdefer wal.deinit();
+                var wal = try Wal.read(&rs, alloc);
+                defer wal.deinit();
 
-                var filedata = try self.disk_manager.getNewFile("sst", alloc);
+                var filedata = try dm.getNewFile("sst", alloc);
                 defer filedata.deinit();
 
                 var ws = ReaderWriterSeeker.initFile(filedata.file);
-                _ = try wal.persist(ws);
+                _ = try wal.persist(&ws);
 
                 //finally delete the unfinished wal file
-                try std.fs.deleteFileAbsolute(filedata.filename);
+                try std.fs.deleteFileAbsolute(filename);
             }
         }
 
@@ -328,7 +334,13 @@ pub fn SstManager(comptime WalType: type) type {
 
         // checks if key is in the range of keys
         pub fn isBetween(self: *Self, key: []const u8) bool {
-            return strcmp(key, self.first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
+            if (self.first_pointer) |first_pointer| {
+                if (self.last_pointer) |last_pointer| {
+                    return strcmp(key, first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, last_pointer.key).compare(std.math.CompareOperator.lte);
+                }
+            }
+
+            return false;
         }
 
         pub fn attemptCompaction(self: *Self) !void {
@@ -493,8 +505,8 @@ const testObj = struct {
 
     alloc: Allocator,
 
-    fn setup(alloc: Allocator) !testObj {
-        var dm = try DiskManager.init("./testing", alloc);
+    fn setup(path: []const u8, alloc: Allocator) !testObj {
+        var dm = try DiskManager.init(path, alloc);
         errdefer dm.deinit();
 
         var wh = try WalHandlerType.init(dm, alloc);
@@ -531,7 +543,7 @@ test "sstindex_binary_search" {
 
 test "sstmanager_init" {
     var alloc = std.testing.allocator;
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     try expectEqualStrings("hello0", t.s.first_pointer.key);
@@ -561,7 +573,7 @@ test "sstmanager_init" {
 test "sstmanager_retrieve_record" {
     var alloc = std.testing.allocator;
 
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     const r = try t.s.find("hello5", alloc);
@@ -572,7 +584,7 @@ test "sstmanager_retrieve_record" {
 
 test "sstmanager_isBetween" {
     var alloc = std.testing.allocator;
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     var data = try alloc.alloc(u8, 10);
@@ -601,7 +613,7 @@ test "sstmanager_isBetween" {
 
 test "sstmanager_persist" {
     var alloc = std.testing.allocator;
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     const res = try t.s.persist(null);
@@ -622,7 +634,7 @@ test "sstmanager_persist" {
 
 test "sstmanager_notify_new_index" {
     var alloc = std.testing.allocator;
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     const r1 = try Record.init("mario", "caster", Op.Delete, alloc);
@@ -658,10 +670,10 @@ test "sstmanager_notify_new_index" {
 test "sst_manager_are_overlapping" {
     var alloc = std.testing.allocator;
 
-    var t1 = try testObj.setup(alloc);
+    var t1 = try testObj.setup("./testing", alloc);
     defer t1.teardown();
 
-    var t2 = try testObj.setup(alloc);
+    var t2 = try testObj.setup("./testing", alloc);
     defer t2.teardown();
 
     var idx1 = t1.s.indices.items[0];
@@ -687,7 +699,7 @@ test "sst_manager_are_overlapping" {
 
 test "sstmanager_compact_indices" {
     var alloc = std.testing.allocator;
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     const idx1 = t.s.indices.items[0];
@@ -713,11 +725,10 @@ test "sstmanager_compact_indices" {
 }
 
 test "sstmanager_attemptCompaction" {
-    std.testing.log_level = .debug;
     std.debug.print("\n", .{});
 
     var alloc = std.testing.allocator;
-    var t = try testObj.setup(alloc);
+    var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
     const idx1 = t.s.indices.items[0];
@@ -733,6 +744,66 @@ test "sstmanager_attemptCompaction" {
 
     try expectEqual(@as(usize, 1), t.s.total_files);
     try expectEqual(@as(usize, total_expected_records), t.s.indices.items[0].header.total_records);
+}
+
+test "sst_manager_start_recover" {
+    std.testing.log_level = .debug;
+    std.debug.print("\n", .{});
+
+    var alloc = std.testing.allocator;
+
+    const dm = try DiskManager.init("/tmp", alloc);
+    defer dm.deinit();
+
+    var wal = try Wal.File.init(512, dm, alloc);
+
+    // 0 SST file must be in the provided folder
+    var files = try dm.getFilenames("sst", alloc);
+    try expectEqual(@as(usize, 0), files.len);
+    freeSliceData(files, alloc);
+
+    const r1 = try Record.init("broken0", "file0", Op.Create, alloc);
+    defer r1.deinit();
+    try wal.append(r1);
+
+    const r2 = try Record.init("broken1", "file1", Op.Create, alloc);
+    defer r2.deinit();
+    try wal.append(r2);
+
+    const r3 = try Record.init("broken2", "file2", Op.Create, alloc);
+    defer r3.deinit();
+    try wal.append(r3);
+
+    wal.deinit();
+
+    var t = try testObj.setup("/tmp", alloc);
+    defer t.teardown();
+
+    // a new sst file must have been created, 1 index must be present
+    try expectEqual(@as(usize, 1), t.s.total_files);
+
+    // inserted values must be searchable
+    var r4 = try t.s.find("broken0", alloc);
+    defer r4.?.deinit();
+
+    try expectEqualStrings(r4.?.getVal(), "file0");
+
+    // no more WAL files must be present in the folder
+    var files2 = try dm.getFilenames("wal", alloc);
+    try expectEqual(@as(usize, 0), files2.len);
+    freeSliceData(files2, alloc);
+
+    // 1 SST file must have been created
+    var files3 = try dm.getFilenames("sst", alloc);
+    try expectEqual(@as(usize, 1), files3.len);
+    freeSliceData(files3, alloc);
+}
+
+fn freeSliceData(s: [][]const u8, alloc: Allocator) void {
+    for (s) |item| {
+        alloc.free(item);
+    }
+    alloc.free(s);
 }
 
 fn deleteFile(filename: []const u8) void {
