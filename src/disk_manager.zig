@@ -139,6 +139,7 @@ pub const DiskManager = struct {
     pub fn getFilenames(self: *Self, ext: []const u8, alloc: std.mem.Allocator) ![][]const u8 {
         log.debug("Reading folder: {s}", .{self.getAbsolutePath()});
         var files = std.ArrayList([]const u8).init(alloc);
+        errdefer files.deinit();
 
         var dirIterator = try std.fs.openIterableDirAbsolute(self.getAbsolutePath(), .{ .no_follow = true });
         defer dirIterator.close();
@@ -148,7 +149,9 @@ pub const DiskManager = struct {
         const absolute_path = self.getAbsolutePath();
         while (try iterator.next()) |item| {
             if (std.mem.eql(u8, item.name[item.name.len - 3 .. item.name.len], ext)) {
-                try files.append(try std.fmt.allocPrint(alloc, "{s}/{s}", .{ absolute_path, item.name }));
+                const filename = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ absolute_path, item.name });
+                errdefer alloc.free(filename);
+                try files.append(filename);
             }
         }
 

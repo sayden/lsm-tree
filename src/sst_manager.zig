@@ -546,8 +546,8 @@ test "sstmanager_init" {
     var t = try testObj.setup("./testing", alloc);
     defer t.teardown();
 
-    try expectEqualStrings("hello0", t.s.first_pointer.key);
-    try expectEqualStrings("hello6", t.s.last_pointer.key);
+    try expectEqualStrings("hello0", t.s.first_pointer.?.key);
+    try expectEqualStrings("hello6", t.s.last_pointer.?.key);
 
     const maybe_record = try t.s.find("hello6", alloc);
     defer maybe_record.?.deinit();
@@ -752,10 +752,13 @@ test "sst_manager_start_recover" {
 
     var alloc = std.testing.allocator;
 
-    const dm = try DiskManager.init("/tmp", alloc);
+    std.fs.makeDirAbsolute("/tmp/start_recover") catch {};
+
+    const dm = try DiskManager.init("/tmp/start_recover", alloc);
     defer dm.deinit();
 
     var wal = try Wal.File.init(512, dm, alloc);
+    errdefer wal.deinit();
 
     // 0 SST file must be in the provided folder
     var files = try dm.getFilenames("sst", alloc);
@@ -776,7 +779,7 @@ test "sst_manager_start_recover" {
 
     wal.deinit();
 
-    var t = try testObj.setup("/tmp", alloc);
+    var t = try testObj.setup("/tmp/start_recover", alloc);
     defer t.teardown();
 
     // a new sst file must have been created, 1 index must be present
@@ -796,6 +799,7 @@ test "sst_manager_start_recover" {
     // 1 SST file must have been created
     var files3 = try dm.getFilenames("sst", alloc);
     try expectEqual(@as(usize, 1), files3.len);
+    deleteFile(files3[0]);
     freeSliceData(files3, alloc);
 }
 
