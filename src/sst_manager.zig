@@ -170,361 +170,355 @@ pub const SstIndex = struct {
     }
 };
 
-pub fn SstManager(comptime WalType: type) type {
-    return struct {
-        const Self = @This();
-        const log = std.log.scoped(.SstManager);
+pub const SstManager = struct {
+    const Self = @This();
+    const log = std.log.scoped(.SstManager);
 
-        total_files: usize = 0,
+    total_files: usize = 0,
 
-        wh: *WalHandler(WalType),
-        disk_manager: *DiskManager,
+    wh: *WalHandler,
+    disk_manager: *DiskManager,
 
-        // Those 2 probably needs to be null to support the use case where the
-        // sstmanager do not have any index yet (so no first and last pointer)
-        first_pointer: ?*Pointer,
-        last_pointer: ?*Pointer,
+    // Those 2 probably needs to be null to support the use case where the
+    // sstmanager do not have any index yet (so no first and last pointer)
+    first_pointer: ?*Pointer,
+    last_pointer: ?*Pointer,
 
-        indices: ArrayList(*SstIndex),
+    indices: ArrayList(*SstIndex),
 
-        alloc: Allocator,
+    alloc: Allocator,
 
-        pub fn init(wh: *WalHandler(WalType), dm: *DiskManager, alloc: Allocator) !*Self {
-            try startRecover(dm, alloc);
+    pub fn init(wh: *WalHandler, dm: *DiskManager, alloc: Allocator) !*Self {
+        try startRecover(dm, alloc);
 
-            const file_entries = try dm.getFilenames("sst", alloc);
-            defer {
-                for (file_entries) |entry| {
-                    alloc.free(entry);
-                }
-                alloc.free(file_entries);
+        const file_entries = try dm.getFilenames("sst", alloc);
+        defer {
+            for (file_entries) |entry| {
+                alloc.free(entry);
             }
+            alloc.free(file_entries);
+        }
 
-            log.debug("Found {} SST Files", .{file_entries.len});
+        log.debug("Found {} SST Files", .{file_entries.len});
 
-            var first_pointer: ?*Pointer = null;
-            var last_pointer: ?*Pointer = null;
+        var first_pointer: ?*Pointer = null;
+        var last_pointer: ?*Pointer = null;
 
-            var indices = try ArrayList(*SstIndex).initCapacity(alloc, file_entries.len);
-            errdefer indices.deinit();
+        var indices = try ArrayList(*SstIndex).initCapacity(alloc, file_entries.len);
+        errdefer indices.deinit();
 
-            for (0..file_entries.len) |i| {
-                var idx = SstIndex.init(file_entries[i], alloc) catch |err| {
-                    switch (err) {
-                        Error.EmptyFile => {
-                            std.fs.deleteFileAbsolute(file_entries[i]) catch |delete_error| {
-                                log.warn("Found empty file '{s}' but there was an error attempting to delete it: {}", .{ file_entries[i], delete_error });
-                            };
-                            continue;
-                        },
-                        else => return err,
-                    }
-                };
-                errdefer idx.deinit();
-
-                if (first_pointer == null) {
-                    first_pointer = idx.first_pointer;
-                    last_pointer = idx.last_pointer;
-                } else {
-                    if (strcmp(idx.first_pointer.key, first_pointer.?.key) == Order.lt) {
-                        first_pointer = idx.first_pointer;
-                    }
-
-                    if (strcmp(idx.last_pointer.key, last_pointer.?.key) == Order.gt) {
-                        last_pointer = idx.last_pointer;
-                    }
+        for (0..file_entries.len) |i| {
+            var idx = SstIndex.init(file_entries[i], alloc) catch |err| {
+                switch (err) {
+                    Error.EmptyFile => {
+                        std.fs.deleteFileAbsolute(file_entries[i]) catch |delete_error| {
+                            log.warn("Found empty file '{s}' but there was an error attempting to delete it: {}", .{ file_entries[i], delete_error });
+                        };
+                        continue;
+                    },
+                    else => return err,
                 }
-                try indices.append(idx);
-            }
-
-            var mng: *Self = try alloc.create(Self);
-
-            mng.* = .{
-                .indices = indices,
-                .alloc = alloc,
-                .disk_manager = dm,
-                .wh = wh,
-                .first_pointer = first_pointer,
-                .last_pointer = last_pointer,
-                .total_files = indices.items.len,
             };
-
-            try mng.attemptCompaction();
-
-            return mng;
-        }
-
-        pub fn deinit(self: *Self) void {
-            for (0..self.total_files) |i| {
-                self.indices.items[i].deinit();
-            }
-            self.indices.deinit();
-            self.alloc.destroy(self);
-        }
-
-        /// startRecover attempts to recover a wal written on a file in a post crash scenario. If a
-        /// WAL is found it will write a SstIndex file with it, regardless of its current size.
-        /// Compaction at a later stage should deal with a scenario where the WAL is "too small"
-        fn startRecover(dm: *DiskManager, alloc: Allocator) !void {
-            const file_entries = try dm.getFilenames("wal", alloc);
-            defer {
-                for (file_entries) |entry| {
-                    alloc.free(entry);
-                }
-                alloc.free(file_entries);
-            }
-
-            for (file_entries) |filename| {
-                var file = try std.fs.openFileAbsolute(filename, std.fs.File.OpenFlags{});
-                const stat = try file.stat();
-                if (stat.size == 0) {
-                    continue;
-                }
-                logns.debug("Trying to recover file {s}", .{filename});
-
-                var rs = ReaderWriterSeeker.initFile(file);
-                const mem_wal = try WalNs.readWalIntoMem(&rs, alloc);
-                defer mem_wal.deinit();
-
-                var dest_file = try dm.getNewFile("sst", alloc);
-                defer dest_file.deinit();
-
-                var dest_writer = ReaderWriterSeeker.initFile(dest_file.file);
-                _ = try WalNs.persistG(mem_wal.ctx.mem, &mem_wal.ctx.header, &dest_writer);
-
-                //finally delete the unfinished wal file
-                try std.fs.deleteFileAbsolute(filename);
-            }
-        }
-
-        fn notifyNewIndexFileCreated(self: *Self, filename: []const u8) !void {
-            var idx: *SstIndex = try SstIndex.init(filename, self.alloc);
             errdefer idx.deinit();
 
-            try self.indices.append(idx);
-            self.total_files += 1;
-        }
+            if (first_pointer == null) {
+                first_pointer = idx.first_pointer;
+                last_pointer = idx.last_pointer;
+            } else {
+                if (strcmp(idx.first_pointer.key, first_pointer.?.key) == Order.lt) {
+                    first_pointer = idx.first_pointer;
+                }
 
-        pub fn append(self: *Self, r: *Record) !void {
-            return if (try self.wh.append(r, self.alloc)) |file_data| {
-                defer file_data.deinit();
-                try self.notifyNewIndexFileCreated(file_data.filename);
-            };
-        }
-
-        pub fn appendOwn(self: *Self, r: *Record) !void {
-            return if (try self.wh.appendOwn(r, self.alloc)) |file_data| {
-                defer file_data.deinit();
-                try self.notifyNewIndexFileCreated(file_data.filename);
-            };
-        }
-
-        // Looks for the key in the WAL, if not present, checks in the indices
-        pub fn find(self: *Self, key: []const u8, alloc: Allocator) !?*Record {
-            // Check in wal first
-            if (try self.wh.find(key, alloc)) |record| {
-                return record;
-            }
-
-            // if it does, retrieve the index (file) that contains the record
-            const idx = self.findIndexForKey(key);
-            if (idx) |index| {
-                return index.get(key, alloc);
-            }
-
-            return null;
-        }
-
-        pub fn totalRecords(self: *Self) usize {
-            var total: usize = 0;
-
-            var iter = self.getIterator();
-            while (iter.next()) |index| {
-                total += index.header.total_records;
-            }
-
-            return total + self.wh.totalRecords();
-        }
-
-        const IndexIterator = Iterator(*SstIndex);
-        fn getIterator(self: *Self) IndexIterator {
-            return IndexIterator.init(self.indices.items);
-        }
-
-        pub fn persist(self: *Self, alloc: Allocator) !?FileData {
-            return self.wh.persistCurrent(alloc);
-        }
-
-        // checks if key is in the range of keys
-        pub fn isBetween(self: *Self, key: []const u8) bool {
-            if (self.first_pointer) |first_pointer| {
-                if (self.last_pointer) |last_pointer| {
-                    return strcmp(key, first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, last_pointer.key).compare(std.math.CompareOperator.lte);
+                if (strcmp(idx.last_pointer.key, last_pointer.?.key) == Order.gt) {
+                    last_pointer = idx.last_pointer;
                 }
             }
-
-            return false;
+            try indices.append(idx);
         }
 
-        pub fn attemptCompaction(self: *Self) !void {
-            var newfiles = ArrayList(FileData).init(self.alloc);
-            defer newfiles.deinit();
+        var mng: *Self = try alloc.create(Self);
 
-            inline for (1..6) |level| {
-                blk: {
-                    const items = self.indices.items;
-                    const total_items = self.total_files;
+        mng.* = .{
+            .indices = indices,
+            .alloc = alloc,
+            .disk_manager = dm,
+            .wh = wh,
+            .first_pointer = first_pointer,
+            .last_pointer = last_pointer,
+            .total_files = indices.items.len,
+        };
 
-                    for (0..total_items) |i| {
-                        //break if it is the last item
-                        if (i == total_items) {
-                            break;
-                        }
+        try mng.attemptCompaction();
 
-                        //early continue if this file is not the expected level
-                        if (items[i].header.level != level) {
+        return mng;
+    }
+
+    pub fn deinit(self: *Self) void {
+        for (0..self.total_files) |i| {
+            self.indices.items[i].deinit();
+        }
+        self.indices.deinit();
+        self.alloc.destroy(self);
+    }
+
+    /// startRecover attempts to recover a wal written on a file in a post crash scenario. If a
+    /// WAL is found it will write a SstIndex file with it, regardless of its current size.
+    /// Compaction at a later stage should deal with a scenario where the WAL is "too small"
+    fn startRecover(dm: *DiskManager, alloc: Allocator) !void {
+        const file_entries = try dm.getFilenames("wal", alloc);
+        defer {
+            for (file_entries) |entry| {
+                alloc.free(entry);
+            }
+            alloc.free(file_entries);
+        }
+
+        for (file_entries) |filename| {
+            var file = try std.fs.openFileAbsolute(filename, std.fs.File.OpenFlags{});
+            const stat = try file.stat();
+            if (stat.size == 0) {
+                continue;
+            }
+            logns.debug("Trying to recover file {s}", .{filename});
+
+            var rs = ReaderWriterSeeker.initFile(file);
+            const mem_wal = try WalNs.readWalIntoMem(&rs, alloc);
+            defer mem_wal.deinit();
+
+            var dest_file = try dm.getNewFile("sst", alloc);
+            defer dest_file.deinit();
+
+            var dest_writer = ReaderWriterSeeker.initFile(dest_file.file);
+            _ = try WalNs.persistG(mem_wal.ctx.mem, &mem_wal.ctx.header, &dest_writer);
+
+            //finally delete the unfinished wal file
+            try std.fs.deleteFileAbsolute(filename);
+        }
+    }
+
+    fn notifyNewIndexFileCreated(self: *Self, filename: []const u8) !void {
+        var idx: *SstIndex = try SstIndex.init(filename, self.alloc);
+        errdefer idx.deinit();
+
+        try self.indices.append(idx);
+        self.total_files += 1;
+    }
+
+    pub fn append(self: *Self, r: *Record) !void {
+        return if (try self.wh.append(r, self.alloc)) |file_data| {
+            defer file_data.deinit();
+            try self.notifyNewIndexFileCreated(file_data.filename);
+        };
+    }
+
+    pub fn appendOwn(self: *Self, r: *Record) !void {
+        return if (try self.wh.appendOwn(r, self.alloc)) |file_data| {
+            defer file_data.deinit();
+            try self.notifyNewIndexFileCreated(file_data.filename);
+        };
+    }
+
+    // Looks for the key in the WAL, if not present, checks in the indices
+    pub fn find(self: *Self, key: []const u8, alloc: Allocator) !?*Record {
+        // Check in wal first
+        if (try self.wh.find(key, alloc)) |record| {
+            return record;
+        }
+
+        // if it does, retrieve the index (file) that contains the record
+        const idx = self.findIndexForKey(key);
+        if (idx) |index| {
+            return index.get(key, alloc);
+        }
+
+        return null;
+    }
+
+    pub fn totalRecords(self: *Self) usize {
+        var total: usize = 0;
+
+        var iter = self.getIterator();
+        while (iter.next()) |index| {
+            total += index.header.total_records;
+        }
+
+        return total + self.wh.totalRecords();
+    }
+
+    const IndexIterator = Iterator(*SstIndex);
+    fn getIterator(self: *Self) IndexIterator {
+        return IndexIterator.init(self.indices.items);
+    }
+
+    pub fn persist(self: *Self, alloc: Allocator) !?FileData {
+        return self.wh.persistCurrent(alloc);
+    }
+
+    // checks if key is in the range of keys
+    pub fn isBetween(self: *Self, key: []const u8) bool {
+        if (self.first_pointer) |first_pointer| {
+            if (self.last_pointer) |last_pointer| {
+                return strcmp(key, first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, last_pointer.key).compare(std.math.CompareOperator.lte);
+            }
+        }
+
+        return false;
+    }
+
+    pub fn attemptCompaction(self: *Self) !void {
+        var newfiles = ArrayList(FileData).init(self.alloc);
+        defer newfiles.deinit();
+
+        inline for (1..6) |level| {
+            blk: {
+                const items = self.indices.items;
+                const total_items = self.total_files;
+
+                for (0..total_items) |i| {
+                    //break if it is the last item
+                    if (i == total_items) {
+                        break;
+                    }
+
+                    //early continue if this file is not the expected level
+                    if (items[i].header.level != level) {
+                        continue;
+                    }
+
+                    for (i + 1..total_items) |j| {
+                        //avoid any kind of accidental self-merging, just to ensure more consistency in case of a regression
+                        if (std.mem.eql(u8, &items[i].header.id, &items[j].header.id)) {
                             continue;
                         }
 
-                        for (i + 1..total_items) |j| {
-                            //avoid any kind of accidental self-merging, just to ensure more consistency in case of a regression
-                            if (std.mem.eql(u8, &items[i].header.id, &items[j].header.id)) {
-                                continue;
-                            }
+                        if (indicesHaveOverlappingKeys(@truncate(level), items[i], items[j])) {
+                            const wal = try self.compact2Indices(items[i], items[j], self.alloc);
+                            defer wal.deinit();
 
-                            if (indicesHaveOverlappingKeys(@truncate(level), items[i], items[j])) {
-                                const wal = try self.compact2Indices(items[i], items[j], self.alloc);
-                                defer wal.deinit();
+                            const filedata = try self.wh.persist(wal, self.alloc);
+                            errdefer filedata.?.deinit();
 
-                                const filedata = try self.wh.persist(wal, self.alloc);
-                                errdefer filedata.?.deinit();
+                            try self.removeIndex(&items[i].header.id);
+                            try self.removeIndex(&items[j].header.id);
 
-                                try self.removeIndex(&items[i].header.id);
-                                try self.removeIndex(&items[j].header.id);
-
-                                try newfiles.append(filedata.?);
-                                break :blk;
-                            }
+                            try newfiles.append(filedata.?);
+                            break :blk;
                         }
                     }
                 }
             }
+        }
 
-            for (newfiles.items) |new_index| {
-                defer new_index.deinit();
-                try self.notifyNewIndexFileCreated(new_index.filename);
+        for (newfiles.items) |new_index| {
+            defer new_index.deinit();
+            try self.notifyNewIndexFileCreated(new_index.filename);
 
-                if (builtin.is_test) {
-                    try std.fs.deleteFileAbsolute(new_index.filename);
-                }
+            if (builtin.is_test) {
+                try std.fs.deleteFileAbsolute(new_index.filename);
+            }
+        }
+    }
+
+    pub fn compact2Indices(_: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: Allocator) !WalNs.Mem.Type {
+        const combined_size = idx1.size() + idx2.size();
+        const level = idx1.header.level + 1;
+        var wal = try WalNs.Mem.init(combined_size, null, alloc);
+        errdefer wal.deinit();
+
+        var ws = ReaderWriterSeeker.initFile(idx1.file);
+        var idx1_iterator = idx1.getPointersIterator();
+        while (idx1_iterator.next()) |pointer| {
+            const r = try pointer.readValue(&ws, alloc);
+            errdefer r.deinit();
+            try wal.appendOwn(r);
+        }
+
+        var ws2 = ReaderWriterSeeker.initFile(idx2.file);
+        var idx2_iterator = idx2.getPointersIterator();
+        while (idx2_iterator.next()) |pointer| {
+            const r = try pointer.readValue(&ws2, alloc);
+            errdefer r.deinit();
+            try wal.appendOwn(r);
+        }
+
+        wal.ctx.header.level = level;
+
+        return wal;
+    }
+
+    fn removeIndex(self: *Self, id: []const u8) !void {
+        //Find index current position
+        var pos: usize = 0;
+        var found: bool = false;
+
+        log.debug("Deleting index {s}", .{id});
+        for (self.indices.items, 0..) |idx, i| {
+            if (std.mem.eql(u8, &idx.header.id, id)) {
+                pos = i;
+                found = true;
+                break;
             }
         }
 
-        pub fn compact2Indices(_: *Self, idx1: *SstIndex, idx2: *SstIndex, alloc: Allocator) !WalNs.Mem.Type {
-            const combined_size = idx1.size() + idx2.size();
-            const level = idx1.header.level + 1;
-            var wal = try WalNs.Mem.init(combined_size, null, alloc);
-            errdefer wal.deinit();
-
-            var ws = ReaderWriterSeeker.initFile(idx1.file);
-            var idx1_iterator = idx1.getPointersIterator();
-            while (idx1_iterator.next()) |pointer| {
-                const r = try pointer.readValue(&ws, alloc);
-                errdefer r.deinit();
-                try wal.appendOwn(r);
-            }
-
-            var ws2 = ReaderWriterSeeker.initFile(idx2.file);
-            var idx2_iterator = idx2.getPointersIterator();
-            while (idx2_iterator.next()) |pointer| {
-                const r = try pointer.readValue(&ws2, alloc);
-                errdefer r.deinit();
-                try wal.appendOwn(r);
-            }
-
-            wal.ctx.header.level = level;
-
-            return wal;
+        if (!found) {
+            log.debug("Index {s} not found", .{id});
+            return Error.IdNotFound;
         }
 
-        fn removeIndex(self: *Self, id: []const u8) !void {
-            //Find index current position
-            var pos: usize = 0;
-            var found: bool = false;
+        var removed = self.indices.swapRemove(pos);
+        defer removed.deinit();
 
-            log.debug("Deleting index {s}", .{id});
-            for (self.indices.items, 0..) |idx, i| {
-                if (std.mem.eql(u8, &idx.header.id, id)) {
-                    pos = i;
-                    found = true;
-                    break;
-                }
-            }
-
-            if (!found) {
-                log.debug("Index {s} not found", .{id});
-                return Error.IdNotFound;
-            }
-
-            var removed = self.indices.swapRemove(pos);
-            defer removed.deinit();
-
-            if (!builtin.is_test) {
-                log.debug("Deleting file {s}", .{removed.filepath});
-                try std.fs.deleteFileAbsolute(removed.file);
-            } else {
-                log.debug("Skipping deletion of file {s}", .{removed.filepath});
-            }
-
-            self.total_files -= 1;
+        if (!builtin.is_test) {
+            log.debug("Deleting file {s}", .{removed.filepath});
+            try std.fs.deleteFileAbsolute(removed.file);
+        } else {
+            log.debug("Skipping deletion of file {s}", .{removed.filepath});
         }
 
-        fn indicesHaveOverlappingKeys(level: u8, idx1: *SstIndex, idx2: *SstIndex) bool {
-            var id1: [36]u8 = undefined;
-            var id2: [36]u8 = undefined;
-            _ = idx1.header.getId(&id1);
-            _ = idx2.header.getId(&id2);
-            log.debug("{s},{s}", .{ id1, id2 });
+        self.total_files -= 1;
+    }
 
-            if (idx1.header.level == level and idx2.header.level == level) {
-                if (strcmp(idx1.last_pointer.key, idx2.first_pointer.key) == Order.gt) {
-                    log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
-                    return true;
-                }
+    fn indicesHaveOverlappingKeys(level: u8, idx1: *SstIndex, idx2: *SstIndex) bool {
+        var id1: [36]u8 = undefined;
+        var id2: [36]u8 = undefined;
+        _ = idx1.header.getId(&id1);
+        _ = idx2.header.getId(&id2);
+        log.debug("{s},{s}", .{ id1, id2 });
 
-                if (strcmp(idx2.last_pointer.key, idx1.first_pointer.key) == Order.gt) {
-                    log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
-                    return true;
-                }
+        if (idx1.header.level == level and idx2.header.level == level) {
+            if (strcmp(idx1.last_pointer.key, idx2.first_pointer.key) == Order.gt) {
+                log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
+                return true;
             }
 
-            return false;
-        }
-
-        fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
-            for (self.indices.items) |index| {
-                if (index.isBetween(key)) {
-                    return index;
-                }
+            if (strcmp(idx2.last_pointer.key, idx1.first_pointer.key) == Order.gt) {
+                log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
+                return true;
             }
-
-            return null;
         }
-    };
-}
+
+        return false;
+    }
+
+    fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
+        for (self.indices.items) |index| {
+            if (index.isBetween(key)) {
+                return index;
+            }
+        }
+
+        return null;
+    }
+};
 
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 const allocPrint = std.fmt.allocPrint;
 
 const testObj = struct {
-    const WalType = WalNs.Mem;
-    const WalHandlerType = WalHandler(WalType);
-    const SstManagerType = SstManager(WalType);
-
     dm: *DiskManager,
-    wh: *WalHandlerType,
-    s: *SstManagerType,
+    wh: *WalHandler,
+    s: *SstManager,
 
     alloc: Allocator,
 
@@ -532,10 +526,10 @@ const testObj = struct {
         var dm = try DiskManager.init(path, alloc);
         errdefer dm.deinit();
 
-        var wh = try WalHandlerType.init(dm, alloc);
+        var wh = try WalHandler.init(dm, alloc);
         errdefer wh.deinit();
 
-        var s = try SstManagerType.init(wh, dm, alloc);
+        var s = try SstManager.init(wh, dm, alloc);
         errdefer s.deinit();
 
         return testObj{
@@ -724,7 +718,7 @@ test "sst_manager_are_overlapping" {
     idx2.last_pointer.key = key3;
     idx2.first_pointer.key = key4;
 
-    try std.testing.expect(SstManager(WalNs.Mem).indicesHaveOverlappingKeys(1, idx1, idx2));
+    try std.testing.expect(SstManager.indicesHaveOverlappingKeys(1, idx1, idx2));
 }
 
 test "sstmanager_compact_indices" {

@@ -11,7 +11,8 @@ const Pointer = PointerNs.Pointer;
 const PointerError = PointerNs.Error;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
-pub fn WalHandler(comptime WalType: type) type {
+pub const WalHandler = WalHandlerTBuilder(Wal.InUse);
+pub fn WalHandlerTBuilder(comptime WalType: type) type {
     return struct {
         const Self = @This();
         const log = std.log.scoped(.WalHandler);
@@ -139,7 +140,7 @@ test "wal_handler_append" {
     var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler(Wal.Mem).init(dm, alloc);
+    var wh = try WalHandler.init(dm, alloc);
     defer wh.deinit();
 
     var r = try Record.init("hello", "world", Op.Upsert, alloc);
@@ -175,7 +176,7 @@ test "wal_handler_persist" {
     var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler(Wal.Mem).init(dm, alloc);
+    var wh = try WalHandler.init(dm, alloc);
     defer wh.deinit();
 
     var r = try Record.init("hello", "world", Op.Upsert, alloc);

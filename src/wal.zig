@@ -25,6 +25,8 @@ const println = DebugNs.println;
 const prints = DebugNs.prints;
 const print = std.debug.print;
 
+pub const InUse = Mem;
+
 pub const Error = error{
     MaxSizeReached,
     CantCreateRecord,
