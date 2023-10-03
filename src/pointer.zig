@@ -172,7 +172,7 @@ test "pointer_init_deinit" {
 test "pointer_read_write" {
     var alloc = std.testing.allocator;
 
-    const p = try Pointer.init("hello", Op.Update, alloc);
+    const p = try Pointer.init("hello", Op.Upsert, alloc);
     defer p.deinit();
 
     var buf: [256]u8 = undefined;
@@ -198,11 +198,11 @@ test "pointer_read_write" {
 test "pointer_readRecord" {
     var alloc = std.testing.allocator;
 
-    const pointer = try Pointer.init("hello", Op.Update, alloc);
+    const pointer = try Pointer.init("hello", Op.Upsert, alloc);
     defer pointer.deinit();
     pointer.offset = pointer.len();
 
-    const r = try Record.init("hello", "world", Op.Create, alloc);
+    const r = try Record.init("hello", "world", Op.Upsert, alloc);
     defer r.deinit();
     r.pointer.deinit();
     r.pointer = try pointer.clone(alloc);
@@ -230,7 +230,7 @@ test "pointer_readRecord" {
 test "pointer_len" {
     var alloc = std.testing.allocator;
 
-    const p = try Pointer.init("hello", Op.Update, alloc);
+    const p = try Pointer.init("hello", Op.Upsert, alloc);
     defer p.deinit();
 
     try expectEqual(@as(usize, 16), p.len());

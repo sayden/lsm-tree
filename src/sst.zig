@@ -70,10 +70,13 @@ pub const Sst = struct {
     }
 
     pub fn initWithIndex(index: *SstIndex, alloc: std.mem.Allocator) !*Sst {
+        var mem = try alloc.alloc(*Record, index.header.total_records);
+        errdefer alloc.free(mem);
+
         var sst: Sst = Sst{
             .header = index.header,
             .alloc = alloc,
-            .mem = try alloc.alloc(*Record, index.header.total_records),
+            .mem = mem,
             .index = index,
         };
 
@@ -81,6 +84,7 @@ pub const Sst = struct {
         for (0..index.header.total_records) |i| {
             try index.file.seekTo(index.getPointer(i).?.offset);
             var r = try index.pointers[i].readRecordClonePointer(index.file.reader(), alloc);
+            errdefer r.deinit();
             sst.mem[i] = r;
         }
 

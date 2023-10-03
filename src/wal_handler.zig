@@ -1,4 +1,6 @@
 const std = @import("std");
+const Allocator = std.mem.Allocator;
+
 const Record = @import("./record.zig").Record;
 const DiskManager = @import("./disk_manager.zig").DiskManager;
 const Op = @import("./ops.zig").Op;
@@ -16,25 +18,22 @@ pub fn WalHandler(comptime WalType: type) type {
 
         disk_manager: *DiskManager,
 
-        old: ?WalType.Type,
         current: WalType.Type,
         next: WalType.Type,
 
-        alloc: std.mem.Allocator,
+        alloc: Allocator,
 
-        pub fn init(dm: *DiskManager, alloc: std.mem.Allocator) !*Self {
+        pub fn init(dm: *DiskManager, alloc: Allocator) !*Self {
             var wh: *Self = try alloc.create(Self);
 
             wh.alloc = alloc;
             wh.disk_manager = dm;
 
-            wh.old = null;
-
             // Create a WAL to use as current
-            wh.current = try WalType.init(Wal.initial_wal_size, alloc);
+            wh.current = try WalType.init(Wal.initial_wal_size, dm, alloc);
 
             // Create also "next" WAL to switch when 'current' is full
-            wh.next = try WalType.init(Wal.initial_wal_size, alloc);
+            wh.next = try WalType.init(Wal.initial_wal_size, dm, alloc);
 
             return wh;
         }
@@ -46,54 +45,31 @@ pub fn WalHandler(comptime WalType: type) type {
             self.current.deinit();
             self.next.deinit();
 
-            if (self.old) |old| {
-                old.deinit();
-            }
-
             self.alloc.destroy(self);
         }
 
-        pub fn persistCurrent(self: *Self, allocator: ?std.mem.Allocator) !?[]const u8 {
-            var fileData_or_error = self.persist(self.current);
-
-            var filename: ?[]const u8 = null;
-            if (fileData_or_error) |*fileData| {
-                if (allocator) |alloc| {
-                    filename = try alloc.dupe(u8, fileData.filename);
-                }
-                fileData.deinit();
-            } else |err| switch (err) {
+        pub fn persistCurrent(self: *Self, alloc: Allocator) !?FileData {
+            return self.switchWal(alloc) catch |err| switch (err) {
                 Wal.Error.EmptyWal => return null,
                 else => {
-                    errdefer err;
-                    {}
+                    return err;
                 },
-            }
-
-            return filename;
+            };
         }
 
-        pub fn persist(self: *Self, wal: WalType.Type) !FileData {
-            if (wal.ctx.header.total_records == 0) {
-                return Wal.Error.EmptyWal;
-            }
-
+        // wal MUST contain at least 1 record
+        pub fn persist(self: *Self, wal: WalType.Type, alloc: Allocator) !?FileData {
             //Get a new file to persist the wal
-            var filedata = try self.disk_manager.getNewFile("sst", self.alloc);
-            errdefer {
-                log.debug("Deleting file {s}\n", .{filedata.filename});
-                std.fs.deleteFileAbsolute(filedata.filename) catch |err| {
-                    log.debug("Error trying to delete file {}\n", .{err});
-                };
-            }
+            var fileData = try self.disk_manager.getNewFile("sst", alloc);
+            errdefer fileData.deinit();
 
-            var ws = ReaderWriterSeeker.initFile(filedata.file);
+            var ws = ReaderWriterSeeker.initFile(fileData.file);
             _ = try wal.persist(&ws);
 
-            return filedata;
+            return fileData;
         }
 
-        pub fn append(self: *Self, r: *Record, alloc: std.mem.Allocator) !?FileData {
+        pub fn append(self: *Self, r: *Record, alloc: Allocator) !?FileData {
             if (self.hasEnoughCapacity(r.len())) {
                 try self.current.append(r);
                 return null;
@@ -106,23 +82,38 @@ pub fn WalHandler(comptime WalType: type) type {
             return fileData;
         }
 
-        fn switchWal(self: *Self, alloc: std.mem.Allocator) !FileData {
+        pub fn appendOwn(self: *Self, r: *Record, alloc: Allocator) !?FileData {
+            if (self.hasEnoughCapacity(r.len())) {
+                try self.current.appendOwn(r);
+                return null;
+            }
+            const fileData = try self.switchWal(alloc);
+            errdefer fileData.deinit();
+
+            try self.current.appendOwn(r);
+
+            return fileData;
+        }
+
+        fn switchWal(self: *Self, alloc: Allocator) !FileData {
+            log.debug("Persisting wal with {} records", .{self.current.ctx.header.total_records});
+
             //Get a new file to persist the wal
             var fileData = try self.disk_manager.getNewFile("sst", alloc);
             errdefer fileData.deinit();
 
             var ws = ReaderWriterSeeker.initFile(fileData.file);
             _ = try self.current.persist(&ws);
-            self.old = self.current;
+
             self.current = self.next;
 
-            self.next = try WalType.init(1024, self.alloc);
+            self.next = try WalType.init(Wal.initial_wal_size, self.disk_manager, self.alloc);
 
             return fileData;
         }
 
         /// Finds the record in the current WAL in use
-        pub fn find(self: *Self, key: []const u8, alloc: std.mem.Allocator) !?*Record {
+        pub fn find(self: *Self, key: []const u8, alloc: Allocator) !?*Record {
             return self.current.find(key, alloc);
         }
 
@@ -131,7 +122,7 @@ pub fn WalHandler(comptime WalType: type) type {
         }
 
         pub fn hasEnoughCapacity(self: *Self, size: usize) bool {
-            return self.current.availableBytes() >= size;
+            return self.current.availableBytes() > size;
         }
     };
 }
@@ -151,7 +142,7 @@ test "wal_handler_append" {
     var wh = try WalHandler(Wal.Mem).init(dm, alloc);
     defer wh.deinit();
 
-    var r = try Record.init("hello", "world", Op.Create, alloc);
+    var r = try Record.init("hello", "world", Op.Upsert, alloc);
     defer r.deinit();
     const maybe_result = try wh.append(r, alloc);
     if (maybe_result) |result| {
@@ -164,7 +155,7 @@ test "wal_handler_append" {
     try expectEqualStrings(r.getKey(), wh.current.ctx.mem[0].getKey());
     try expectEqualStrings(r.getVal(), wh.current.ctx.mem[0].getVal());
 
-    var r2 = try Record.init("hello2", "world2", Op.Create, alloc);
+    var r2 = try Record.init("hello2", "world2", Op.Upsert, alloc);
     defer r2.deinit();
 
     const maybe_file_data = try wh.append(r2, alloc);
@@ -187,14 +178,14 @@ test "wal_handler_persist" {
     var wh = try WalHandler(Wal.Mem).init(dm, alloc);
     defer wh.deinit();
 
-    var r = try Record.init("hello", "world", Op.Create, alloc);
+    var r = try Record.init("hello", "world", Op.Upsert, alloc);
     defer r.deinit();
     const maybe_file_data = try wh.append(r, alloc);
     if (maybe_file_data) |file_data| {
         defer file_data.deinit();
     }
 
-    var fileData = try wh.persist(wh.current);
+    var fileData = (try wh.persistCurrent(alloc)).?;
     // TODO check if the file that has been created has the expected contents
     defer fileData.deinit();
     defer std.fs.deleteFileAbsolute(fileData.filename) catch |err| {

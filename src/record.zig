@@ -180,7 +180,7 @@ const expectEq = std.testing.expectEqual;
 test "record_init" {
     var alloc = std.testing.allocator;
 
-    var r = try Record.init("hell0", "world1", Op.Update, alloc);
+    var r = try Record.init("hell0", "world1", Op.Upsert, alloc);
     defer r.deinit();
 
     try expectEq(@as(usize, 31), r.valueLen());
@@ -188,7 +188,7 @@ test "record_init" {
 
     try expectEqualStrings("hell0", r.pointer.key);
     try expectEqualStrings("world1", r.value);
-    try expectEq(Op.Update, r.pointer.op);
+    try expectEq(Op.Upsert, r.pointer.op);
 }
 
 test "record_len" {

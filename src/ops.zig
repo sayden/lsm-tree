@@ -1,8 +1,7 @@
 const std = @import("std");
 
 pub const Op = enum(u8) {
-    Create,
+    Upsert,
     Delete,
-    Update,
     Skip,
 };

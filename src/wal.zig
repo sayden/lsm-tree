@@ -1,5 +1,6 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const builtin = @import("builtin");
 
 const RecordNs = @import("./record.zig");
 const Op = @import("./ops.zig").Op;
@@ -17,6 +18,7 @@ const Iterator = IteratorNs.Iterator;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 const DiskManager = @import("./disk_manager.zig").DiskManager;
 const BytesIterator = IteratorNs.BytesIterator;
+const BackwardsIterator = IteratorNs.IteratorBackwards;
 const DebugNs = @import("./debug.zig");
 
 const println = DebugNs.println;
@@ -31,8 +33,10 @@ pub const Error = error{
     ErrorWritingValue,
 } || RecordError || Allocator.Error;
 
-pub const initial_wal_size = 32000;
-const logns = std.log.scoped(.SstManager);
+// pub const initial_wal_size = if (builtin.is_test) 512 else 32000;
+pub const initial_wal_size = 32000 * 32;
+
+const logns = std.log.scoped(.Wal);
 
 pub fn Wal(
     comptime Context: type,
@@ -43,6 +47,7 @@ pub fn Wal(
     comptime findFn: fn (self: *Context, key_to_find: []const u8, alloc: Allocator) ?*Record,
     comptime availableBytesFn: fn (self: *Context) usize,
     comptime sortFn: fn (self: *Context) anyerror![]*Record,
+    comptime persistFn: fn (self: *Context, ws: *ReaderWriterSeeker) anyerror!usize,
     comptime getWalSizeFn: fn (self: *Context) usize,
     comptime iteratorFn: fn (self: *Context, alloc: ?Allocator) anyerror!IteratorType,
     comptime deinitFn: fn (self: *Context) void,
@@ -90,8 +95,8 @@ pub fn Wal(
                 self.ctx,
             );
         }
-        pub fn persist(self: Self, ws: *ReaderWriterSeeker) !usize {
-            return persistG(self.ctx.mem, &self.ctx.header, ws);
+        pub fn persist(self: Self, ws: *ReaderWriterSeeker) anyerror!usize {
+            return persistFn(self.ctx, ws);
         }
         pub fn debug(self: *Self) void {
             return debugFn(self.ctx);
@@ -133,7 +138,7 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
         if (record.pointer.op == Op.Skip) {
             continue;
         }
-        if ((record.pointer.op == Op.Create or record.pointer.op == Op.Update) and i > 0) {
+        if ((record.pointer.op == Op.Upsert or record.pointer.op == Op.Upsert) and i > 0) {
             // if previous record has the same id, skip it. Else, the record is somewhere else
             // and the update/delete operation will happen in compaction
             if (std.mem.eql(u8, records[i - 1].pointer.key, record.pointer.key)) {
@@ -167,7 +172,7 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
 }
 
 pub fn appendKvG(ctx: anytype, k: []const u8, v: []const u8, alloc: Allocator) anyerror!void {
-    var r = try Record.init(k, v, Op.Create, alloc);
+    var r = try Record.init(k, v, Op.Upsert, alloc);
     errdefer r.deinit();
     return ctx.appendOwn(r);
 }
@@ -177,7 +182,7 @@ pub fn preAppend(ctx: anytype, r: *Record) Error!void {
     const record_size: usize = r.len();
 
     // Check if there's available space in the WAL
-    if (ctx.getWalSize() + record_size >= ctx.max_size) {
+    if (ctx.getWalSize() + record_size > ctx.max_size) {
         return Error.MaxSizeReached;
     }
 }
@@ -192,6 +197,10 @@ pub fn postAppend(header: *Header, r: *Record) void {
 pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record {
     while (iter.next()) |r| {
         if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
+            if (r.pointer.op == Op.Delete) {
+                return null;
+            }
+
             return r.clone(alloc) catch |err| {
                 std.debug.print("{}\n", .{err});
                 return null;
@@ -204,19 +213,23 @@ pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record 
 
 pub fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
     const res = strcmp(lhs.pointer.key, rhs.pointer.key);
-    if (res == Math.Order.eq) {
+    if (res == Math.Order.eq and lhs.pointer.op == rhs.pointer.op) {
+        return res.compare(Math.CompareOperator.lte);
+    } else if (res == Math.Order.eq) {
         return @intFromEnum(lhs.pointer.op) < @intFromEnum(rhs.pointer.op);
     }
+
     return res.compare(Math.CompareOperator.lte);
 }
 
-pub fn read(rs: *ReaderWriterSeeker, alloc: Allocator) !Mem.Type {
-    var wal = try Mem.init(initial_wal_size, alloc);
+/// read a wal into a Mem wal and returns the latter
+pub fn readWalIntoMem(reader: *ReaderWriterSeeker, alloc: Allocator) !Mem.Type {
+    var wal = try Mem.init(initial_wal_size, null, alloc);
 
-    try rs.seekTo(HeaderNs.headerSize());
+    try reader.seekTo(HeaderNs.headerSize());
 
     while (true) {
-        var p = Pointer.read(rs, alloc) catch |err| {
+        var p = Pointer.read(reader, alloc) catch |err| {
             switch (err) {
                 std.os.SeekError.Unseekable, error.EndOfStream, error.OutOfMemory => {
                     break;
@@ -228,7 +241,7 @@ pub fn read(rs: *ReaderWriterSeeker, alloc: Allocator) !Mem.Type {
             }
         };
 
-        const r = p.readValueReusePointer(rs, alloc) catch |err| {
+        const r = p.readValueReusePointer(reader, alloc) catch |err| {
             p.deinit();
 
             switch (err) {
@@ -250,7 +263,7 @@ pub fn read(rs: *ReaderWriterSeeker, alloc: Allocator) !Mem.Type {
         try wal.appendOwn(r);
     }
 
-    logns.info("Found {} records", .{wal.ctx.header.total_records});
+    logns.debug("Found {} records", .{wal.ctx.header.total_records});
 
     return wal;
 }
@@ -275,13 +288,14 @@ pub const Mem = struct {
         find,
         availableBytes,
         sort,
+        persist,
         getWalSize,
         getIterator,
         deinit,
         debug,
     );
 
-    pub fn init(size: usize, alloc: Allocator) !Type {
+    pub fn init(size: usize, _: ?*DiskManager, alloc: Allocator) !Type {
         var wal = try setup(size, alloc);
         return .{ .ctx = wal };
     }
@@ -343,7 +357,7 @@ pub const Mem = struct {
     // Compare the provided key with the ones in memory and
     // returns the last record that is found (or none if none is found)
     pub fn find(self: *Self, key_to_find: []const u8, alloc: Allocator) ?*Record {
-        var iter = self.getIterator(null) catch unreachable;
+        var iter = self.getBackwardsIterator(null) catch unreachable;
         return findG(&iter, key_to_find, alloc);
     }
 
@@ -361,16 +375,22 @@ pub const Mem = struct {
         return HeaderNs.headerSize() + self.recordsSize() + self.pointersSize();
     }
 
-    const IteratorType = Iterator(*Record);
     // Creates a forward iterator to go through the wal.
-    fn getIterator(self: *Self, _: ?Allocator) !IteratorType {
-        const iter = IteratorType.init(self.mem[0..self.header.total_records]);
+    fn getIterator(self: *Self, _: ?Allocator) !Iterator(*Record) {
+        const iter = Iterator(*Record).init(self.mem[0..self.header.total_records]);
 
         return iter;
     }
 
-    pub fn persist(self: *Self, ws: *ReaderWriterSeeker) !usize {
-        persistG(self.mem, self.header, ws);
+    // Creates a forward iterator to go through the wal.
+    fn getBackwardsIterator(self: *Self, _: ?Allocator) !IteratorNs.IteratorBackwards(*Record) {
+        const iter = IteratorNs.IteratorBackwards(*Record).init(self.mem[0..self.header.total_records]);
+
+        return iter;
+    }
+
+    pub fn persist(self: *Self, ws: *ReaderWriterSeeker) anyerror!usize {
+        return persistG(self.mem, &self.header, ws);
     }
 
     fn recordsSize(self: *Self) usize {
@@ -414,8 +434,10 @@ pub const File = struct {
     max_size: usize,
     header: Header,
     file: std.fs.File,
+    disk_manager: *DiskManager,
     writer: ReaderWriterSeeker,
     current_offset: usize = HeaderNs.headerSize(),
+    filepath: []const u8,
 
     alloc: Allocator,
 
@@ -428,6 +450,7 @@ pub const File = struct {
         find,
         availableBytes,
         sort,
+        persist,
         getWalSize,
         getIterator,
         deinit,
@@ -449,7 +472,6 @@ pub const File = struct {
         errdefer alloc.destroy(wal);
 
         var filedata = try dm.getNewFile("wal", alloc);
-        alloc.free(filedata.filename);
 
         var header = Header.init();
         var writer = ReaderWriterSeeker.initFile(filedata.file);
@@ -462,6 +484,8 @@ pub const File = struct {
             .max_size = size,
             .file = filedata.file,
             .writer = writer,
+            .disk_manager = dm,
+            .filepath = filedata.filename,
         };
 
         return wal;
@@ -469,7 +493,17 @@ pub const File = struct {
 
     pub fn deinit(self: *Self) void {
         defer self.alloc.destroy(self);
-        defer self.file.close();
+        defer self.alloc.free(self.filepath);
+
+        if (self.file.stat()) |stat| {
+            if (stat.size == 0) {
+                self.file.close();
+                std.fs.deleteFileAbsolute(self.filepath) catch {};
+            }
+        } else |err| {
+            log.warn("{}", .{err});
+            self.file.close();
+        }
     }
 
     pub fn appendKv(self: *Self, k: []const u8, v: []const u8) !void {
@@ -505,15 +539,64 @@ pub const File = struct {
     // Compare the provided key with the ones in memory and
     // returns the last record that is found (or none if none is found)
     pub fn find(self: *Self, key_to_find: []const u8, alloc: Allocator) ?*Record {
+        var found_records = std.ArrayList(*Record).init(alloc);
+        defer found_records.deinit();
+
         var iter = self.getIterator() catch |err| {
             std.debug.print("Could not create iterator: {}\n", .{err});
             return null;
         };
-        return findG(iter, key_to_find, alloc);
+
+        while (iter.next()) |r| {
+            if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
+                try found_records.append(r);
+            }
+        }
+
+        var sorted_records = try found_records.toOwnedSlice();
+        std.sort.insertion(*Record, sorted_records, {}, lexicographical_compare);
+
+        var backwardsiter = IteratorNs.IteratorBackwards(*Record).init(sorted_records);
+        while (backwardsiter.next()) |record| {
+            if (record.op == Op.Delete) {
+                return null;
+            }
+
+            return record.clone(alloc);
+        }
+
+        return null;
     }
 
-    pub fn persist(self: *Self, ws: *ReaderWriterSeeker) !usize {
-        persistG(self.mem, self.header, ws);
+    pub fn persist(self: *Self, dest_writer: *ReaderWriterSeeker) anyerror!usize {
+        try self.file.seekTo(0);
+
+        var wal_file_reader = ReaderWriterSeeker.initFile(self.file);
+        var wal = try readWalIntoMem(&wal_file_reader, self.alloc);
+        defer wal.deinit();
+
+        if (wal.ctx.header.total_records == 0) {
+            return Error.EmptyWal;
+        }
+
+        _ = persistG(wal.ctx.mem, &wal.ctx.header, dest_writer) catch |err| {
+            switch (err) {
+                Error.EmptyWal => {
+                    return 0;
+                },
+                else => return err,
+            }
+        };
+
+        // After sucessful persit, delete the file
+        var filepath = try self.alloc.alloc(u8, self.current.ctx.filepath.len);
+        defer self.alloc.free(filepath);
+        @memcpy(filepath, self.current.ctx.filepath);
+        self.current.deinit();
+
+        try std.fs.deleteFileAbsolute(filepath);
+
+        return @as(usize, 0);
     }
 
     pub fn availableBytes(self: *Self) usize {
@@ -572,9 +655,8 @@ const expect = std.testing.expect;
 const expectEqual = std.testing.expectEqual;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-// pub fn createWal(alloc: Allocator) !Mem.Type {
 pub fn createWal(alloc: Allocator) !Mem.Type {
-    var wal = try Mem.init(1024, alloc);
+    var wal = try Mem.init(1024, null, alloc);
 
     var buf1 = try alloc.alloc(u8, 10);
     var buf2 = try alloc.alloc(u8, 10);
@@ -585,7 +667,7 @@ pub fn createWal(alloc: Allocator) !Mem.Type {
         const key = try std.fmt.bufPrint(buf1, "hello{}", .{i});
         const val = try std.fmt.bufPrint(buf2, "world{}", .{i});
 
-        const r = try Record.init(key, val, Op.Create, alloc);
+        const r = try Record.init(key, val, Op.Upsert, alloc);
         defer r.deinit();
 
         try wal.append(r);
@@ -597,8 +679,8 @@ pub fn createWal(alloc: Allocator) !Mem.Type {
 test "wal_lexicographical_compare" {
     var alloc = std.testing.allocator;
 
-    var r1 = try Record.init("hello0", "world00", Op.Create, alloc);
-    var r2 = try Record.init("hello0", "world01", Op.Update, alloc);
+    var r1 = try Record.init("hello0", "world00", Op.Upsert, alloc);
+    var r2 = try Record.init("hello0", "world01", Op.Upsert, alloc);
     defer r1.deinit();
     defer r2.deinit();
 
@@ -608,22 +690,6 @@ test "wal_lexicographical_compare" {
     defer r3.deinit();
 
     try expect(lexicographical_compare({}, r3, r1));
-}
-
-test "wal_find_a_key" {
-    var alloc = std.testing.allocator;
-    var wal = try createWal(alloc);
-    defer wal.deinit();
-
-    try expectEqual(@as(usize, 7), wal.ctx.header.total_records);
-
-    const maybe_record = wal.find(wal.ctx.mem[3].getKey(), alloc);
-    defer maybe_record.?.deinit();
-
-    try expect(std.mem.eql(u8, maybe_record.?.value, wal.ctx.mem[3].value[0..]));
-
-    const unkonwn_record = wal.find("unknokwn", alloc);
-    try expect(unkonwn_record == null);
 }
 
 test "wal_iterator" {
@@ -644,10 +710,10 @@ test "wal_iterator" {
 test "wal_add_record" {
     var alloc = std.testing.allocator;
 
-    var wal = try Mem.init(512, alloc);
+    var wal = try Mem.init(512, null, alloc);
     defer wal.deinit();
 
-    var r = try Record.init("hello", "world", Op.Create, alloc);
+    var r = try Record.init("hello", "world", Op.Upsert, alloc);
 
     try wal.appendOwn(r);
 
@@ -708,7 +774,7 @@ test "wal_persist" {
     try expectEqualStrings("hello0", record1.getKey());
     try expectEqualStrings("world0", record1.getVal());
     try expectEqual(HeaderNs.headerSize() + wal.ctx.header.pointers_size, try record1.getOffset());
-    try expectEqual(Op.Create, record1.pointer.op);
+    try expectEqual(Op.Upsert, record1.pointer.op);
 
     //Read the entire value
     var record2 = try pointer2.readValue(&ws, alloc);
@@ -717,7 +783,33 @@ test "wal_persist" {
     try expectEqualStrings("hello1", record2.getKey());
     try expectEqualStrings("world1", record2.getVal());
     try expectEqual(HeaderNs.headerSize() + total_records * calculated_pointer_size + record1.valueLen(), try record2.getOffset());
-    try expectEqual(Op.Create, record2.pointer.op);
+    try expectEqual(Op.Upsert, record2.pointer.op);
+}
+
+test "wal_find_key" {
+    var alloc = std.testing.allocator;
+    var wal = try Mem.init(1024, null, alloc);
+    defer wal.deinit();
+
+    for (0..5) |_| {
+        var r = try Record.init("hello", "world", Op.Upsert, alloc);
+        defer r.deinit();
+        try wal.append(r);
+    }
+
+    var r = try Record.init("hello", "12345", Op.Upsert, alloc);
+    try wal.appendOwn(r);
+
+    var maybe_record = wal.find("hello", alloc);
+    defer maybe_record.?.deinit();
+
+    try expectEqualStrings("12345", maybe_record.?.getVal());
+
+    var r1 = try Record.init("hello", "world", Op.Delete, alloc);
+    try wal.appendOwn(r1);
+
+    var deleted_record = wal.find("hello", alloc);
+    try expect(deleted_record == null);
 }
 
 fn copyFileToTmp(original_file: std.fs.File) void {
