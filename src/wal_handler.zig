@@ -1,14 +1,13 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
-const Record = @import("./record.zig").Record;
+const RecordNS = @import("./record.zig");
+const Record = RecordNS.Record;
 const DiskManager = @import("./disk_manager.zig").DiskManager;
 const Op = @import("./ops.zig").Op;
 const FileData = @import("./disk_manager.zig").FileData;
-const PointerNs = @import("./pointer.zig");
 const Wal = @import("./wal.zig");
-const Pointer = PointerNs.Pointer;
-const PointerError = PointerNs.Error;
+const Pointer = RecordNS.Pointer;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 pub const WalHandler = WalHandlerTBuilder(Wal.InUse);
@@ -151,7 +150,7 @@ test "wal_handler_append" {
     }
 
     try expectEqual(@as(usize, 1), wh.current.ctx.header.total_records);
-    try std.testing.expectError(PointerError.NullOffset, wh.current.ctx.mem[0].getOffset());
+    try std.testing.expectError(RecordNS.Error.NullOffset, wh.current.ctx.mem[0].getOffset());
     try expect(r != wh.current.ctx.mem[0]);
     try expectEqualStrings(r.getKey(), wh.current.ctx.mem[0].getKey());
     try expectEqualStrings(r.getVal(), wh.current.ctx.mem[0].getVal());

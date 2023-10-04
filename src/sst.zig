@@ -1,5 +1,5 @@
 const std = @import("std");
-const Pointer = @import("./pointer.zig").Pointer;
+const Pointer = @import("./record.zig").Pointer;
 const Record = @import("./record.zig").Record;
 const HeaderNs = @import("./header.zig");
 const SstIndex = @import("./sst_manager.zig").SstIndex;

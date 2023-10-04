@@ -3,7 +3,7 @@ const clap = @import("./pkg/zig-clap/clap.zig");
 const HeaderNs = @import("./header.zig");
 const Header = HeaderNs.Header;
 const Record = @import("./record.zig").Record;
-const Pointer = @import("./pointer.zig").Pointer;
+const Pointer = @import("./record.zig").Pointer;
 const ReadWriteSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 pub fn println(s: anytype) void {

@@ -4,9 +4,8 @@ const Allocator = std.mem.Allocator;
 const builtin = @import("builtin");
 const UUID = @import("./pkg/zig-uuid/uuid.zig").UUID;
 
-const RecordPkg = @import("./record.zig");
+const RecordNS = @import("./record.zig");
 const HeaderNs = @import("./header.zig");
-const PointerNs = @import("./pointer.zig");
 const SstNs = @import("./sst.zig");
 const OpNs = @import("./ops.zig");
 const StringsNs = @import("./strings.zig");
@@ -17,10 +16,10 @@ const WalHandlerNs = @import("./wal_handler.zig");
 const DebugNs = @import("./debug.zig");
 
 const Header = HeaderNs.Header;
-const Pointer = PointerNs.Pointer;
+const Pointer = RecordNS.Pointer;
 const Sst = SstNs.Sst;
 const Op = OpNs.Op;
-const Record = RecordPkg.Record;
+const Record = RecordNS.Record;
 const Math = std.math;
 const Order = Math.Order;
 const DiskManager = DiskManagerNs.DiskManager;

@@ -2,7 +2,7 @@ const std = @import("std");
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 const headerSize = @import("./header.zig").headerSize;
 const Record = @import("./record.zig").Record;
-const Pointer = @import("./pointer.zig").Pointer;
+const Pointer = @import("./record.zig").Pointer;
 
 pub fn Iterator(comptime T: anytype) type {
     return struct {
