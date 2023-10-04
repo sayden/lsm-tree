@@ -143,7 +143,7 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
         if ((record.pointer.op == Op.Upsert or record.pointer.op == Op.Upsert) and i > 0) {
             // if previous record has the same id, skip it. Else, the record is somewhere else
             // and the update/delete operation will happen in compaction
-            if (std.mem.eql(u8, records[i - 1].pointer.key, record.pointer.key)) {
+            if (std.mem.eql(u8, records[i - 1].getKey(), record.getKey())) {
                 records[i - 1].pointer.op = Op.Skip;
             }
         }
@@ -164,7 +164,7 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
     // because we need to know their offsets after writing. It can be calculated
     // now, but maybe not later if compression comes in place
     header.first_pointer_offset = HeaderNs.headerSize();
-    header.last_pointer_offset = header.pointers_size + HeaderNs.headerSize() - records[header.total_records - 1].pointerSize();
+    header.last_pointer_offset = header.pointers_size + HeaderNs.headerSize() - records[header.total_records - 1].getPointerSize();
 
     // Write the header
     try ws.seekTo(0);
@@ -193,12 +193,12 @@ pub fn preAppend(ctx: anytype, r: *Record) Error!void {
 pub fn postAppend(header: *Header, r: *Record) void {
     header.total_records += 1;
     header.records_size += r.valueLen();
-    header.pointers_size += r.pointerSize();
+    header.pointers_size += r.getPointerSize();
 }
 
 pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record {
     while (iter.next()) |r| {
-        if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
+        if (std.mem.eql(u8, r.getKey(), key_to_find)) {
             if (r.pointer.op == Op.Delete) {
                 return null;
             }
@@ -214,7 +214,7 @@ pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record 
 }
 
 pub fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
-    const res = strcmp(lhs.pointer.key, rhs.pointer.key);
+    const res = strcmp(lhs.getKey(), rhs.getKey());
     if (res == Math.Order.eq and lhs.pointer.op == rhs.pointer.op) {
         return res.compare(Math.CompareOperator.lte);
     } else if (res == Math.Order.eq) {
@@ -550,7 +550,7 @@ pub const File = struct {
         };
 
         while (iter.next()) |r| {
-            if (std.mem.eql(u8, r.pointer.key, key_to_find)) {
+            if (std.mem.eql(u8, r.getKey(), key_to_find)) {
                 try found_records.append(r);
             }
         }

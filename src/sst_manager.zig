@@ -161,7 +161,23 @@ pub const SstIndex = struct {
 
     // checks if key is in the range of keys of this sst
     pub fn isBetween(self: *SstIndex, key: []const u8) bool {
-        return strcmp(key, self.first_pointer.key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_pointer.key).compare(std.math.CompareOperator.lte);
+        return strcmp(key, self.firstKey()).compare(std.math.CompareOperator.gte) and strcmp(key, self.lastKey()).compare(std.math.CompareOperator.lte);
+    }
+
+    fn lastKey(self: *SstIndex) []const u8 {
+        return self.last_pointer.key;
+    }
+
+    fn setLastKey(self: *SstIndex, new: []u8) void {
+        self.last_pointer.key = new;
+    }
+
+    fn firstKey(self: *SstIndex) []const u8 {
+        return self.first_pointer.key;
+    }
+
+    fn setFirstKey(self: *SstIndex, new: []u8) void {
+        self.first_pointer.key = new;
     }
 
     pub fn debug(self: *SstIndex) void {
@@ -224,11 +240,11 @@ pub const SstManager = struct {
                 first_pointer = idx.first_pointer;
                 last_pointer = idx.last_pointer;
             } else {
-                if (strcmp(idx.first_pointer.key, first_pointer.?.key) == Order.lt) {
+                if (strcmp(idx.firstKey(), first_pointer.?.key) == Order.lt) {
                     first_pointer = idx.first_pointer;
                 }
 
-                if (strcmp(idx.last_pointer.key, last_pointer.?.key) == Order.gt) {
+                if (strcmp(idx.lastKey(), last_pointer.?.key) == Order.gt) {
                     last_pointer = idx.last_pointer;
                 }
             }
@@ -485,18 +501,34 @@ pub const SstManager = struct {
         log.debug("{s},{s}", .{ id1, id2 });
 
         if (idx1.header.level == level and idx2.header.level == level) {
-            if (strcmp(idx1.last_pointer.key, idx2.first_pointer.key) == Order.gt) {
+            if (strcmp(idx1.lastKey(), idx2.firstKey()) == Order.gt) {
                 log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
                 return true;
             }
 
-            if (strcmp(idx2.last_pointer.key, idx1.first_pointer.key) == Order.gt) {
+            if (strcmp(idx2.lastKey(), idx1.firstKey()) == Order.gt) {
                 log.debug("\nFound overlapping keys in index '{s}' and '{s}'\n", .{ id1, id2 });
                 return true;
             }
         }
 
         return false;
+    }
+
+    fn lastKey(self: *Self) []const u8 {
+        return self.last_pointer.key;
+    }
+
+    fn setLastKey(self: *Self, new: []const u8) void {
+        self.last_pointer.key = new;
+    }
+
+    fn firstKey(self: *Self) []const u8 {
+        return self.first_pointer.key;
+    }
+
+    fn setFirstKey(self: *Self, new: []const u8) void {
+        self.first_pointer.key = new;
     }
 
     fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
@@ -552,9 +584,9 @@ test "sstindex_binary_search" {
     var idx = try SstIndex.init("./testing/example.sst", alloc);
     defer idx.deinit();
 
-    var maybe_record = idx.find("hello6");
+    var maybe_pointer = idx.find("hello6");
 
-    try expectEqualStrings(idx.pointers[6].key, maybe_record.?.key);
+    try expectEqualStrings(idx.pointers[6].key, maybe_pointer.?.key);
 }
 
 test "sstmanager_find" {
@@ -707,15 +739,15 @@ test "sst_manager_are_overlapping" {
     var key3 = try alloc.dupe(u8, "hello100");
     var key4 = try alloc.dupe(u8, "hello25");
 
-    alloc.free(idx1.last_pointer.key);
-    alloc.free(idx1.first_pointer.key);
-    idx1.last_pointer.key = key1;
-    idx1.first_pointer.key = key2;
+    alloc.free(idx1.lastKey());
+    alloc.free(idx1.firstKey());
+    idx1.setLastKey(key1);
+    idx1.setFirstKey(key2);
 
-    alloc.free(idx2.last_pointer.key);
-    alloc.free(idx2.first_pointer.key);
-    idx2.last_pointer.key = key3;
-    idx2.first_pointer.key = key4;
+    alloc.free(idx2.lastKey());
+    alloc.free(idx2.firstKey());
+    idx2.setLastKey(key3);
+    idx2.setFirstKey(key4);
 
     try std.testing.expect(SstManager.indicesHaveOverlappingKeys(1, idx1, idx2));
 }

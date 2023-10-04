@@ -13,12 +13,6 @@ const prints = Debug.prints;
 const print = std.debug.print;
 
 /// A record is an array of contiguous bytes in the following form:
-///
-/// 1 byte to store the op type of the record
-/// 8 bytes T to store the total bytes that the record uses
-/// 2 bytes L to store the key length
-/// K bytes to store the key, where K = key.len
-/// V bytes to store the value, where V = value.len
 pub const Record = struct {
     pointer: *Pointer,
 
@@ -148,33 +142,50 @@ pub const Record = struct {
         return self.valueLen() + self.pointer.len();
     }
 
+    /// Timestamp
+    pub fn getTs(self: *Self) i128 {
+        return self.ts;
+    }
+
+    // Pointer access methods
+
+    /// Record's key
     pub fn getKey(r: *Self) []const u8 {
         return r.pointer.key;
     }
 
+    /// Record's operation
+    pub fn getOp(r: *Self) Op {
+        return r.pointer.op;
+    }
+
+    /// Offset in file
     pub fn getOffset(r: *Self) !usize {
         return r.pointer.getOffset();
     }
 
-    pub fn pointerSize(self: *Self) usize {
+    /// Pointer size in bytes
+    pub fn getPointerSize(self: *Self) usize {
         return self.pointer.len();
     }
 
+    /// Record value size in bytes. The value does not include the pointer size.
+    /// To get the total size (record+pointer) use .len() instead
     pub fn getVal(self: *Self) []const u8 {
         return self.value;
     }
 
     pub fn debug(self: *Self) void {
         std.debug.print("\n-------\nRecord:\n-------\nOp:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\nVsize:\t{}\nOffset:\t{?}\nTS:\t{}\n", .{
-            self.pointer.op, self.pointer.key, self.value, self.len(), self.valueLen(), self.pointer.offset, self.ts,
+            self.getOp(), self.getKey(), self.getVal(), self.len(), self.valueLen(), self.getOffset(), self.getTs(),
         });
     }
 };
 
 // A pointer contains an Operation, a key and a offset to find the Value of the record.
 pub const Pointer = struct {
-    op: Op,
     key: []u8,
+    op: Op,
     offset: ?usize = null,
     alloc: std.mem.Allocator,
 
@@ -321,7 +332,7 @@ test "record_init" {
     try expectEq(@as(usize, 31), r.valueLen());
     try expectEq(@as(usize, 47), r.len());
 
-    try expectEqualStrings("hell0", r.pointer.key);
+    try expectEqualStrings("hell0", r.getKey());
     try expectEqualStrings("world1", r.value);
     try expectEq(Op.Upsert, r.pointer.op);
 }
@@ -336,13 +347,13 @@ test "record_len" {
     try expectEq(@as(usize, 46), r.len());
 }
 
-test "record_pointerSize" {
+test "record_getPointerSize()" {
     var alloc = std.testing.allocator;
 
     var r = try Record.init("hello", "world", Op.Delete, alloc);
     defer r.deinit();
 
-    var size = r.pointerSize();
+    var size = r.getPointerSize();
     try expectEq(@as(usize, 16), size);
 }
 
