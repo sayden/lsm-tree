@@ -20,6 +20,7 @@ const DiskManager = @import("./disk_manager.zig").DiskManager;
 const BytesIterator = IteratorNs.BytesIterator;
 const BackwardsIterator = IteratorNs.IteratorBackwards;
 const DebugNs = @import("./debug.zig");
+const FileData = @import("./disk_manager.zig").FileData;
 
 const println = DebugNs.println;
 const prints = DebugNs.prints;
@@ -140,13 +141,13 @@ pub fn persistG(records: []*Record, header: *Header, ws: *ReaderWriterSeeker) !u
         if (record.pointer.op == Op.Skip) {
             continue;
         }
-        if ((record.pointer.op == Op.Upsert or record.pointer.op == Op.Upsert) and i > 0) {
-            // if previous record has the same id, skip it. Else, the record is somewhere else
-            // and the update/delete operation will happen in compaction
-            if (std.mem.eql(u8, records[i - 1].getKey(), record.getKey())) {
-                records[i - 1].pointer.op = Op.Skip;
-            }
-        }
+        // if (i > 0) {
+        //     // if previous record has the same id, skip it. Else, the record is somewhere else
+        //     // and the update/delete operation will happen in compaction
+        //     if (std.mem.eql(u8, records[i - 1].getKey(), record.getKey())) {
+        //         records[i - 1].pointer.op = Op.Skip;
+        //     }
+        // }
 
         record.pointer.offset = record_offset;
         written += try record.writePointer(ws);
@@ -435,11 +436,10 @@ pub const File = struct {
 
     max_size: usize,
     header: Header,
-    file: std.fs.File,
     disk_manager: *DiskManager,
     writer: ReaderWriterSeeker,
     current_offset: usize = HeaderNs.headerSize(),
-    filepath: []const u8,
+    filedata: FileData,
 
     alloc: Allocator,
 
@@ -473,7 +473,7 @@ pub const File = struct {
         var wal = try alloc.create(File);
         errdefer alloc.destroy(wal);
 
-        var filedata = try dm.getNewFile("wal", alloc);
+        const filedata = try dm.getNewFile("wal", alloc);
 
         var header = Header.init();
         var writer = ReaderWriterSeeker.initFile(filedata.file);
@@ -484,10 +484,9 @@ pub const File = struct {
             .header = header,
             .alloc = alloc,
             .max_size = size,
-            .file = filedata.file,
+            .filedata = filedata,
             .writer = writer,
             .disk_manager = dm,
-            .filepath = filedata.filename,
         };
 
         return wal;
@@ -495,17 +494,13 @@ pub const File = struct {
 
     pub fn deinit(self: *Self) void {
         defer self.alloc.destroy(self);
-        defer self.alloc.free(self.filepath);
 
-        if (self.file.stat()) |stat| {
+        defer self.filedata.deinit();
+        if (self.filedata.file.stat()) |stat| {
             if (stat.size == 0) {
-                self.file.close();
-                std.fs.deleteFileAbsolute(self.filepath) catch {};
+                defer std.fs.deleteFileAbsolute(self.filedata.filename) catch {};
             }
-        } else |err| {
-            log.warn("{}", .{err});
-            self.file.close();
-        }
+        } else |_| {}
     }
 
     pub fn appendKv(self: *Self, k: []const u8, v: []const u8) !void {
@@ -738,7 +733,7 @@ test "wal_persist" {
 
     var file = try tmp_dir.dir.createFile("test.sst", std.fs.File.CreateFlags{ .read = true });
     defer file.close();
-    defer copyFileToTmp(file);
+    // defer copyFileToTmp(file);
 
     var ws = ReaderWriterSeeker.initFile(file);
 

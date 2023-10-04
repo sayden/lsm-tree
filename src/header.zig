@@ -60,6 +60,8 @@ pub const Header = struct {
     }
 
     pub fn read(reader: *ReadWriterSeeker) !Header {
+        try reader.seekTo(0);
+
         //Magic number
         var magic = try reader.readByte();
 

@@ -9,6 +9,7 @@ const FileData = @import("./disk_manager.zig").FileData;
 const Wal = @import("./wal.zig");
 const Pointer = RecordNS.Pointer;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
+const SstIndex = @import("./sst_index.zig").SstIndex;
 
 pub const WalHandler = WalHandlerTBuilder(Wal.InUse);
 pub fn WalHandlerTBuilder(comptime WalType: type) type {
@@ -23,17 +24,17 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
 
         alloc: Allocator,
 
-        pub fn init(dm: *DiskManager, alloc: Allocator) !*Self {
+        pub fn init(dm: *DiskManager, wal_size: usize, alloc: Allocator) !*Self {
             var wh: *Self = try alloc.create(Self);
 
             wh.alloc = alloc;
             wh.disk_manager = dm;
 
             // Create a WAL to use as current
-            wh.current = try WalType.init(Wal.initial_wal_size, dm, alloc);
+            wh.current = try WalType.init(wal_size, dm, alloc);
 
             // Create also "next" WAL to switch when 'current' is full
-            wh.next = try WalType.init(Wal.initial_wal_size, dm, alloc);
+            wh.next = try WalType.init(wal_size, dm, alloc);
 
             return wh;
         }
@@ -42,6 +43,7 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
         /// Returns the absolute file path of the file created
         /// with the contents of the current WAL, if an allocator is passed
         pub fn deinit(self: *Self) void {
+            // remove empty files first
             self.current.deinit();
             self.next.deinit();
 
@@ -49,6 +51,10 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
         }
 
         pub fn persistCurrent(self: *Self, alloc: Allocator) !?FileData {
+            if (self.current.ctx.header.total_records == 0) {
+                return null;
+            }
+
             return self.switchWal(alloc) catch |err| switch (err) {
                 Wal.Error.EmptyWal => return null,
                 else => {
@@ -57,8 +63,11 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
             };
         }
 
-        // wal MUST contain at least 1 record
         pub fn persist(self: *Self, wal: WalType.Type, alloc: Allocator) !?FileData {
+            if (wal.ctx.header.total_records == 0) {
+                return null;
+            }
+
             //Get a new file to persist the wal
             var fileData = try self.disk_manager.getNewFile("sst", alloc);
             errdefer fileData.deinit();
@@ -74,6 +83,7 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
                 try self.current.append(r);
                 return null;
             }
+
             const fileData = try self.switchWal(alloc);
             errdefer fileData.deinit();
 
@@ -87,6 +97,7 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
                 try self.current.appendOwn(r);
                 return null;
             }
+
             const fileData = try self.switchWal(alloc);
             errdefer fileData.deinit();
 
@@ -104,9 +115,9 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
 
             var ws = ReaderWriterSeeker.initFile(fileData.file);
             _ = try self.current.persist(&ws);
+            self.current.deinit();
 
             self.current = self.next;
-
             self.next = try WalType.init(Wal.initial_wal_size, self.disk_manager, self.alloc);
 
             return fileData;
@@ -131,15 +142,13 @@ const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-const SstIndex = @import("./sst_manager.zig").SstIndex;
-
 test "wal_handler_append" {
     var alloc = std.testing.allocator;
 
     var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler.init(dm, alloc);
+    var wh = try WalHandler.init(dm, 512, alloc);
     defer wh.deinit();
 
     var r = try Record.init("hello", "world", Op.Upsert, alloc);
@@ -175,27 +184,25 @@ test "wal_handler_persist" {
     var dm = try DiskManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler.init(dm, alloc);
+    var wh = try WalHandler.init(dm, 512, alloc);
     defer wh.deinit();
 
     var r = try Record.init("hello", "world", Op.Upsert, alloc);
-    defer r.deinit();
-    const maybe_file_data = try wh.append(r, alloc);
+
+    const maybe_file_data = try wh.appendOwn(r, alloc);
     if (maybe_file_data) |file_data| {
         defer file_data.deinit();
+        try expect(false);
     }
 
     var fileData = (try wh.persistCurrent(alloc)).?;
     // TODO check if the file that has been created has the expected contents
-    defer fileData.deinit();
-    defer std.fs.deleteFileAbsolute(fileData.filename) catch |err| {
-        std.debug.print("Could not delete file {s}: {},\n", .{ fileData.filename, err });
-    };
 
     try fileData.file.seekTo(0);
 
-    var sst: *SstIndex = try SstIndex.init(fileData.filename, alloc);
+    var sst: *SstIndex = try SstIndex.initFile(fileData, alloc);
     defer sst.deinit();
+    defer std.fs.deleteFileAbsolute(fileData.filename) catch {};
 
     try expectEqual(@as(usize, 1), sst.header.total_records);
 

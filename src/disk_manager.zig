@@ -62,6 +62,7 @@ pub const DiskManager = struct {
             .filename = filename,
             .alloc = alloc,
         };
+
         return fileData;
     }
 
@@ -138,6 +139,7 @@ pub const DiskManager = struct {
     /// FREE the returned value
     pub fn getFilenames(self: *Self, ext: []const u8, alloc: std.mem.Allocator) ![][]const u8 {
         log.debug("Reading folder: {s}", .{self.getAbsolutePath()});
+
         var files = std.ArrayList([]const u8).init(alloc);
         errdefer files.deinit();
 
@@ -188,6 +190,8 @@ test "disk_manager_init" {
 
     var f = try dm.getNewFile("sst", alloc);
     defer f.deinit();
+
+    return std.fs.deleteFileAbsolute(f.filename);
 }
 
 test "disk_manager_getNewFile" {

@@ -176,7 +176,7 @@ pub const Record = struct {
     }
 
     pub fn debug(self: *Self) void {
-        std.debug.print("\n-------\nRecord:\n-------\nOp:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\nVsize:\t{}\nOffset:\t{?}\nTS:\t{}\n", .{
+        std.debug.print("\n-------\nRecord:\n-------\nOp:\t{}\nKey:\t{s}\nVal:\t{s}\nSize:\t{}\nVsize:\t{}\nOffset:\t{!}\nTS:\t{}\n", .{
             self.getOp(), self.getKey(), self.getVal(), self.len(), self.valueLen(), self.getOffset(), self.getTs(),
         });
     }
