@@ -20,13 +20,13 @@ pub const ReaderWriterSeeker = union(enum) {
         return Self{ .file = f };
     }
 
-    pub fn write(self: *ReaderWriterSeeker, bytes: []u8) anyerror!usize {
+    pub fn write(self: *ReaderWriterSeeker, bytes: []const u8) anyerror!usize {
         return switch (self.*) {
             inline else => |*case| case.write(bytes),
         };
     }
 
-    pub fn writeAll(self: *ReaderWriterSeeker, bytes: []u8) anyerror!void {
+    pub fn writeAll(self: *ReaderWriterSeeker, bytes: []const u8) anyerror!void {
         return switch (self.*) {
             inline else => |*case| {
                 var writer = case.writer();
@@ -92,9 +92,15 @@ pub const ReaderWriterSeeker = union(enum) {
         };
     }
 
-    pub fn getPos(self: *ReaderWriterSeeker) usize {
+    pub fn seekBy(self: *Self, amt: i64) anyerror!void {
         return switch (self.*) {
-            inline else => |case| case.getPos(),
+            inline else => |case| case.seekBy(amt),
+        };
+    }
+
+    pub fn getPos(self: *ReaderWriterSeeker) !usize {
+        return switch (self.*) {
+            inline else => |*case| case.getPos(),
         };
     }
 };

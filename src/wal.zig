@@ -10,8 +10,7 @@ const HeaderNs = @import("./header.zig");
 const Header = HeaderNs.Header;
 const lsmtree = @import("./main.zig");
 const Pointer = RecordNs.Pointer;
-const Strings = @import("./strings.zig");
-const strcmp = Strings.strcmp;
+const strings = @import("./strings.zig");
 const Math = std.math;
 const IteratorNs = @import("./iterator.zig");
 const Iterator = IteratorNs.Iterator;
@@ -215,7 +214,9 @@ pub fn findG(iter: anytype, key_to_find: []const u8, alloc: Allocator) ?*Record 
 }
 
 pub fn lexicographical_compare(_: void, lhs: *Record, rhs: *Record) bool {
-    const res = strcmp(lhs.getKey(), rhs.getKey());
+    const res = strings.strcmp(lhs.getKey(), rhs.getKey());
+
+    // If keys and ops are the same, return the lowest string
     if (res == Math.Order.eq and lhs.pointer.op == rhs.pointer.op) {
         return res.compare(Math.CompareOperator.lte);
     } else if (res == Math.Order.eq) {

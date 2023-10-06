@@ -24,19 +24,27 @@ pub const DiskManager = struct {
     absolute_path: []const u8,
     idNumber: u32,
 
-    pub fn init(relative: []const u8, alloc: std.mem.Allocator) !*DiskManager {
-        // Create a folder to store data and continue if the folder already exists so it is opened.
-        std.os.mkdir(relative, 600) catch |err| {
-            _ = switch (err) {
-                MakeDirError.PathAlreadyExists => void, //open the content of the folder,
-                else => return err,
-            };
+    pub fn init(path: []const u8, alloc: std.mem.Allocator) !*DiskManager {
+        var real: []u8 = undefined;
+
+        if (std.fs.path.isAbsolute(path)) {
+            real = try alloc.dupe(u8, path);
+        } else {
+            real = try std.fs.realpathAlloc(alloc, path);
+        }
+
+        _ = std.fs.openDirAbsolute(real, std.fs.Dir.OpenDirOptions{}) catch |err| switch (err) {
+            std.fs.Dir.OpenError.FileNotFound => try std.fs.makeDirAbsolute(path),
+            else => return err,
         };
 
+        var rndnumber = DiskManager.getRandomNumber();
         var dm: *DiskManager = try alloc.create(DiskManager);
-        dm.absolute_path = try std.fs.cwd().realpathAlloc(alloc, relative);
-        dm.alloc = alloc;
-        dm.idNumber = DiskManager.getRandomNumber();
+        dm.* = .{
+            .absolute_path = real,
+            .alloc = alloc,
+            .idNumber = rndnumber,
+        };
 
         return dm;
     }

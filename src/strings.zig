@@ -20,6 +20,22 @@ pub fn strcmp(a: []const u8, b: []const u8) Order {
     return Math.order(a.len, b.len);
 }
 
+pub fn lt(a: []const u8, b: []const u8) bool {
+    return strcmp(a, b).compare(Math.CompareOperator.lt);
+}
+
+pub fn lte(a: []const u8, b: []const u8) bool {
+    return strcmp(a, b).compare(Math.CompareOperator.lte);
+}
+
+pub fn gt(a: []const u8, b: []const u8) bool {
+    return strcmp(a, b).compare(Math.CompareOperator.gt);
+}
+
+pub fn gte(a: []const u8, b: []const u8) bool {
+    return strcmp(a, b).compare(Math.CompareOperator.gte);
+}
+
 test "strcmp" {
     const hella = "hella";
     const hello = "hello";

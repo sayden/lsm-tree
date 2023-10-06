@@ -29,6 +29,31 @@ pub fn Iterator(comptime T: anytype) type {
     };
 }
 
+pub fn MutableIterator(comptime T: anytype) type {
+    return struct {
+        const Self = @This();
+
+        pos: usize = 0,
+        items: []T,
+
+        pub fn init(items: []T) Self {
+            return Self{
+                .items = items,
+            };
+        }
+
+        pub fn next(self: *Self) ?*T {
+            if (self.pos == self.items.len) {
+                return null;
+            }
+
+            var ptr = &self.items[self.pos];
+            self.pos += 1;
+            return ptr;
+        }
+    };
+}
+
 pub const BytesIterator = struct {
     reader: *ReaderWriterSeeker,
     alloc: std.mem.Allocator,

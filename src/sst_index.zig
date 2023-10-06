@@ -72,7 +72,7 @@ pub const SstIndex = struct {
             .pointers = pointers,
         };
 
-        log.debug("Loaded index '{s}' fro, '{s}' with {} records", .{ s.header.id, s.filedata.filename, s.header.total_records });
+        log.debug("Loaded index '{s}' from '{s}' with {} records", .{ s.header.id, s.filedata.filename, s.header.total_records });
 
         return s;
     }
@@ -147,22 +147,6 @@ pub const SstIndex = struct {
     // checks if key is in the range of keys of this sst
     pub fn isBetween(self: *SstIndex, key: []const u8) bool {
         return strcmp(key, self.firstKey()).compare(std.math.CompareOperator.gte) and strcmp(key, self.lastKey()).compare(std.math.CompareOperator.lte);
-    }
-
-    pub fn lastKey(self: *SstIndex) []const u8 {
-        return self.last_key;
-    }
-
-    pub fn setLastKey(self: *SstIndex, new: []u8) void {
-        self.last_key = new;
-    }
-
-    pub fn firstKey(self: *SstIndex) []const u8 {
-        return self.first_key;
-    }
-
-    pub fn setFirstKey(self: *SstIndex, new: []u8) void {
-        self.first_key = new;
     }
 
     pub fn debug(self: *SstIndex) void {

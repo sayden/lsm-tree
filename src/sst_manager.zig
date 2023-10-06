@@ -28,6 +28,7 @@ const Iterator = @import("./iterator.zig").Iterator;
 const FileData = DiskManagerNs.FileData;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 const SstIndex = @import("./sst_index.zig").SstIndex;
+const strings = @import("./strings.zig");
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;
@@ -136,14 +137,14 @@ pub const SstManager = struct {
 
     fn updateFirstAndLastPointer(self: *Self, idx: *SstIndex) !void {
         if (self.first_key) |f_key| {
-            if (strcmp(idx.firstKey(), f_key).compare(Math.CompareOperator.lte)) {
-                self.alloc.free(self.first_key.?);
-                self.first_key = try self.alloc.dupe(u8, idx.firstKey());
+            if (strings.lte(idx.first_key, f_key)) {
+                var buf = self.alloc.realloc(self.firstkey.?, idx.first_key.len);
+                @memcpy(buf, idx.first_key);
             }
 
-            if (strcmp(idx.lastKey(), self.last_key.?).compare(Math.CompareOperator.gte)) {
-                self.alloc.free(self.last_key.?);
-                self.last_key = try self.alloc.dupe(u8, idx.lastKey());
+            if (strings.gte(idx.last_key, self.last_key.?)) {
+                var buf = self.alloc.realloc(self.last_key.?, idx.last_key.len);
+                @memcpy(buf, idx.last_key);
             }
         } else {
             self.first_key = try self.alloc.dupe(u8, idx.firstKey());
@@ -433,10 +434,12 @@ const testObj = struct {
     wh: *WalHandler,
     s: *SstManager,
 
+    testdata: TestData,
+
     alloc: Allocator,
 
-    fn setup(path: []const u8, alloc: Allocator) !testObj {
-        var dm = try DiskManager.init(path, alloc);
+    fn setupTestdata(testdata: TestData, alloc: Allocator) !testObj {
+        var dm = try DiskManager.init(testdata.path, alloc);
         errdefer dm.deinit();
 
         var wh = try WalHandler.init(dm, 512, alloc);
@@ -450,13 +453,20 @@ const testObj = struct {
             .wh = wh,
             .s = s,
             .alloc = alloc,
+            .testdata = testdata,
         };
+    }
+
+    fn setup(alloc: Allocator) !testObj {
+        var testdata = try createSandbox();
+        return setupTestdata(testdata, alloc);
     }
 
     fn teardown(self: *testObj) void {
         defer self.s.deinit();
         defer self.wh.deinit();
         defer self.dm.deinit();
+        defer self.testdata.deinit();
     }
 };
 
@@ -464,11 +474,10 @@ test "sstmanager_init" {
     // std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    const abs_path = try createSandbox("sstmanager_init", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
+    var testdata = try createSandbox();
+    defer testdata.deinit();
 
-    var dm = try DiskManager.init(abs_path, alloc);
+    var dm = try DiskManager.init(testdata.path, alloc);
     defer dm.deinit();
 
     var wh = try WalHandler.init(dm, 512, alloc);
@@ -486,10 +495,8 @@ test "sstmanager_find" {
     // std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    var abs_path = try createSandbox("sstmanager_find", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
-    var t = try testObj.setup(abs_path, alloc);
+
+    var t = try testObj.setup(alloc);
     defer t.teardown();
 
     try expectEqualStrings("hello0", t.s.first_key.?);
@@ -520,10 +527,8 @@ test "sstmanager_retrieve_record" {
     // std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    var abs_path = try createSandbox("sstmanager_retrieve_record", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
-    var t = try testObj.setup(abs_path, alloc);
+
+    var t = try testObj.setup(alloc);
     defer t.teardown();
 
     const r = try t.s.find("hello5", alloc);
@@ -536,10 +541,8 @@ test "sstmanager_isBetween" {
     // std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    var abs_path = try createSandbox("sstmanager_isBetween", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
-    var t = try testObj.setup(abs_path, alloc);
+
+    var t = try testObj.setup(alloc);
     defer t.teardown();
 
     var data = try alloc.alloc(u8, 10);
@@ -570,10 +573,8 @@ test "sstmanager_notify_new_index" {
     // std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    var abs_path = try createSandbox("sstmanager_notify_new_index", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
-    var t = try testObj.setup(abs_path, alloc);
+
+    var t = try testObj.setup(alloc);
     defer t.teardown();
 
     const r1 = try Record.init("mario", "caster", Op.Delete, alloc);
@@ -633,13 +634,11 @@ test "sst_manager_are_overlapping" {
 }
 
 test "compacter_attemptCompaction" {
-    // std.testing.log_level = .debug;
+    std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    var abs_path = try createSandbox("compacter_attemptCompaction", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
-    var t = try testObj.setup(abs_path, alloc);
+
+    var t = try testObj.setup(alloc);
     defer t.teardown();
 
     try expectEqual(@as(usize, 1), t.s.getIndicesCount());
@@ -657,11 +656,10 @@ test "sst_manager_start_recover" {
     // std.testing.log_level = .debug;
 
     var alloc = std.testing.allocator;
-    const abs_path = try createSandbox("sst_manager_start_recover", alloc);
-    defer alloc.free(abs_path);
-    defer std.fs.deleteTreeAbsolute(abs_path) catch {};
 
-    const dm = try DiskManager.init(abs_path, alloc);
+    var testdata = try createSandbox();
+
+    const dm = try DiskManager.init(testdata.path, alloc);
     defer dm.deinit();
 
     var wal = try WalNs.File.init(512, dm, alloc);
@@ -676,7 +674,7 @@ test "sst_manager_start_recover" {
     try wal.appendOwn(try Record.init("broken1", "file1", Op.Upsert, alloc));
     try wal.appendOwn(try Record.init("broken2", "file2", Op.Upsert, alloc));
 
-    var t = try testObj.setup(abs_path, alloc);
+    var t = try testObj.setupTestdata(testdata, alloc);
     defer t.teardown();
 
     // a new sst file must have been created, 2 indices must be present, one with merged "hello" keys
@@ -713,18 +711,34 @@ fn deleteFile(filename: []const u8) void {
     };
 }
 
-fn createSandbox(testname: []const u8, alloc: Allocator) ![]const u8 {
-    // var dir = std.testing.tmpIterableDir(std.fs.Dir.OpenDirOptions{ .access_sub_paths = true });
+const TestData = struct {
+    buf: [std.fs.MAX_PATH_BYTES]u8,
+    path: []const u8,
+    dir: std.testing.TmpDir,
 
-    var abs_folder = try std.fmt.allocPrint(alloc, "/tmp/{s}", .{testname});
-    try std.fs.makeDirAbsolute(abs_folder);
+    pub fn deinit(self: *TestData) void {
+        self.dir.cleanup();
+    }
+};
 
-    const file1 = try copyFileToFolder("testing/example.sst", "example.sst", abs_folder, alloc);
-    defer file1.close();
-    const file2 = try copyFileToFolder("testing/example2.sst", "example2.sst", abs_folder, alloc);
-    defer file2.close();
+fn createSandbox() !TestData {
+    var tmpdir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{ .access_sub_paths = true });
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var dir = tmpdir.dir;
+    const abs_path = try std.os.getFdPath(dir.fd, &buf);
 
-    return abs_folder;
+    var testdata = TestData{
+        .buf = buf,
+        .dir = tmpdir,
+        .path = abs_path,
+    };
+
+    const cwd = std.fs.cwd();
+
+    try cwd.copyFile("./testing/example.sst", dir, "example.sst", std.fs.CopyFileOptions{});
+    try cwd.copyFile("./testing/example2.sst", dir, "example2.sst", std.fs.CopyFileOptions{});
+
+    return testdata;
 }
 
 fn copyFileToFolder(filepath: []const u8, dest_name: []const u8, folder: []const u8, alloc: Allocator) !std.fs.File {
