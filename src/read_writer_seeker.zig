@@ -44,11 +44,58 @@ pub const ReaderWriterSeeker = union(enum) {
         };
     }
 
+    pub fn writeIntNative(self: *ReaderWriterSeeker, comptime T: type, value: T) anyerror!void {
+        return switch (self.*) {
+            inline else => |*case| {
+                var writer = case.writer();
+                return writer.writeIntNative(T, value);
+            },
+        };
+    }
+
     pub fn readIntLittle(self: *ReaderWriterSeeker, comptime T: type) !T {
         return switch (self.*) {
             inline else => |*case| {
                 var reader = case.reader();
                 return reader.readIntLittle(T);
+            },
+        };
+    }
+
+    pub fn readIntNative(self: *ReaderWriterSeeker, comptime T: type) !T {
+        return switch (self.*) {
+            inline else => |*case| {
+                var reader = case.reader();
+                return reader.readIntNative(T);
+            },
+        };
+    }
+
+    pub fn readFloat(self: *ReaderWriterSeeker, comptime T: type) !T {
+        return switch (self.*) {
+            inline else => |*case| {
+                var reader = case.reader();
+
+                var buf: [64]u8 = undefined;
+                var fbs = std.io.fixedBufferStream(&buf);
+                var writer = fbs.writer();
+
+                try reader.streamUntilDelimiter(writer, '!', 64);
+
+                var written = fbs.getWritten();
+                const value = try std.fmt.parseFloat(T, written);
+
+                return value;
+            },
+        };
+    }
+
+    pub fn writeFloat(self: *ReaderWriterSeeker, comptime T: type, v: T) !void {
+        return switch (self.*) {
+            inline else => |*case| {
+                var writer = case.writer();
+                try std.fmt.formatFloatDecimal(v, .{}, writer);
+                try writer.writeByte('!');
             },
         };
     }
@@ -94,7 +141,7 @@ pub const ReaderWriterSeeker = union(enum) {
 
     pub fn seekBy(self: *Self, amt: i64) anyerror!void {
         return switch (self.*) {
-            inline else => |case| case.seekBy(amt),
+            inline else => |*case| case.seekBy(amt),
         };
     }
 
@@ -105,7 +152,7 @@ pub const ReaderWriterSeeker = union(enum) {
     }
 };
 
-test "asdfasdf" {
+test "ReaderWriterSeeker" {
     var alloc = std.testing.allocator;
 
     // Create a temp file
@@ -118,8 +165,6 @@ test "asdfasdf" {
     var buf = try alloc.alloc(u8, 100);
     defer alloc.free(buf);
 
-    // var fseek = f.seekableStream();
-    // _ = fseek;
     var fwriter = file.writer();
     _ = fwriter;
 
@@ -130,4 +175,19 @@ test "asdfasdf" {
 
     _ = try wss.seekTo(0);
     _ = try wss.write(hello);
+}
+
+test "ReaderWriterSeeker_read_write_float" {
+    // Create a temp file
+    var alloc = std.testing.allocator;
+
+    var buf = try alloc.alloc(u8, 32);
+    defer alloc.free(buf);
+
+    var rws = ReaderWriterSeeker.initBuf(buf);
+    try rws.writeFloat(f64, 23.4);
+    try rws.seekTo(0);
+
+    const val = try rws.readFloat(f64);
+    try std.testing.expectEqual(@as(f64, 23.4), val);
 }
