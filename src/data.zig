@@ -147,9 +147,12 @@ pub const DataChunk = struct {
     }
 
     pub fn read(reader: *ReaderWriterSeeker, comptime T: type, alloc: Allocator) !DataChunk {
-        var mem = ArrayList(Data).init(alloc);
+        //read the metadata header
         const meta = try Metadata.read(reader, T, alloc);
+
+        var mem = ArrayList(Data).init(alloc);
         for (0..meta.count) |_| {
+            // read a single data entry
             var row = try Data.read(T, reader, alloc);
             errdefer row.deinit();
 
@@ -176,25 +179,16 @@ pub const DataChunk = struct {
 
         var chunk_zero_offset = try writer.getPos();
 
+        // write metadata header for this chunk
         try self.meta.?.write(writer);
 
-        var size_pos = try writer.getPos();
-        try writer.seekBy(@as(i64, @truncate(@sizeOf(usize))));
-
-        const start_size_offset = try writer.getPos();
         var iter = Iterator(Data).init(self.mem.items);
-        while (iter.next()) |row| {
-            _ = try row.write(writer);
+        while (iter.next()) |data| {
+            // write a single data entry
+            _ = try data.write(writer);
         }
 
-        const final_offset = try writer.getPos();
-
-        const datasize: usize = final_offset - start_size_offset;
-        try writer.seekTo(size_pos);
-        try self.meta.?.writeDatasize(datasize, writer);
-
-        const bytes_written = final_offset - chunk_zero_offset;
-
+        const bytes_written = try writer.getPos() - chunk_zero_offset;
         return bytes_written;
     }
 
@@ -239,25 +233,23 @@ pub const DataTableWriter = struct {
     }
 
     pub fn write(self: *DataTableWriter, writer: *ReaderWriterSeeker) !usize {
-        const start_offset = try writer.getPos();
+        var start_size: usize = try writer.getPos();
 
+        // write the metadata header
         try self.meta.write(writer);
 
         var offsets = try ArrayList(usize).initCapacity(self.alloc, self.mem.items.len);
         defer offsets.deinit();
 
-        var iter = MutableIterator(DataChunk).init(self.mem.items);
-
-        // store current position
-        const offsets_start = try writer.getPos();
-
         // Move forward to the place where the offsets should have finished
-        var n: i64 = @intCast(@sizeOf(usize) * self.mem.items.len);
+        const start_offset = try writer.getPos();
+        const n: i64 = @intCast(@sizeOf(usize) * self.mem.items.len);
         try writer.seekBy(n);
 
         // Get the current offset pos, after moving forward
         var offset_sentinel = try writer.getPos();
 
+        var iter = MutableIterator(DataChunk).init(self.mem.items);
         while (iter.next()) |chunk| {
             // we are going to write in position 'offset_sentinel', store this position in the array
             // to write it later on the file
@@ -270,27 +262,21 @@ pub const DataTableWriter = struct {
             offset_sentinel += bytes_written;
         }
 
-        const final_pos = try writer.getPos();
-        const datasize = final_pos - offsets_start;
-        const written = final_pos - start_offset;
+        const final_pos = offset_sentinel;
 
-        // Go back to the position where the offsets should be written, after the metadata buf before the chunks
-        // The position of each chunk is now stored in the 'offsets' array
-        try writer.seekTo(offsets_start);
-
-        // Now that we now the data size, write it first
-        try self.meta.writeDatasize(datasize, writer);
+        // go back to the position to write the offsets list
+        try writer.seekTo(start_offset);
 
         // Finally, write the array of offsets
         for (offsets.items) |offset| {
             try writer.writeIntNative(usize, offset);
         }
 
-        return written;
+        return final_pos - start_size;
     }
 };
 
-const DataTableReader = struct {
+pub const DataTableReader = struct {
     const log = std.log.scoped(.DataTableReader);
     meta: Metadata,
 
@@ -307,14 +293,15 @@ const DataTableReader = struct {
         self.meta.deinit();
     }
 
-    pub fn readChunkMetadata(self: *DataTableReader, array_pos: usize, comptime T: type, alloc: Allocator) !DataChunkReader {
+    pub fn readChunk(self: *DataTableReader, array_pos: usize, comptime T: type, alloc: Allocator) !DataChunk {
         try self.reader.seekTo(self.offsets.items[array_pos]);
-        return try DataChunkReader.read(&self.reader, T, alloc);
+        return try DataChunk.read(&self.reader, T, alloc);
     }
 
     pub fn read(f: fs.File, comptime T: type, alloc: Allocator) !DataTableReader {
         var addr = try os.mmap(null, Metadata.MAX_SIZE, system.PROT.READ, std.os.MAP.SHARED, f.handle, 0);
         errdefer os.munmap(addr);
+
         var reader = ReaderWriterSeeker.initBuf(addr);
 
         const meta = try Metadata.read(&reader, T, alloc);
@@ -347,7 +334,6 @@ const Metadata = struct {
     lastkey: Data,
     magicnumber: u16 = 0,
     count: usize = 0,
-    datasize: usize = 0,
 
     pub fn deinit(self: Metadata) void {
         self.firstkey.deinit();
@@ -359,14 +345,12 @@ const Metadata = struct {
         const count = try reader.readIntNative(usize);
         const firstkey = try T.readIndexingValue(reader, alloc);
         const lastkey = try T.readIndexingValue(reader, alloc);
-        var size = try reader.readIntNative(usize);
 
         return Metadata{
             .magicnumber = magicn,
             .count = count,
             .firstkey = firstkey,
             .lastkey = lastkey,
-            .datasize = size,
         };
     }
 
@@ -375,11 +359,6 @@ const Metadata = struct {
         try writer.writeIntNative(@TypeOf(self.count), self.count);
         try self.firstkey.writeIndexingValue(writer);
         try self.lastkey.writeIndexingValue(writer);
-    }
-
-    pub fn writeDatasize(self: *Metadata, datasize: usize, writer: *ReaderWriterSeeker) !void {
-        self.datasize = datasize;
-        try writer.writeIntNative(@TypeOf(datasize), datasize);
     }
 
     pub fn debug(m: Metadata) void {
@@ -394,7 +373,6 @@ const Metadata = struct {
             m.magicnumber,
         });
         log.debug("Count:\t\t{}", .{m.count});
-        log.debug("Datasize:\t\t{}", .{m.datasize});
         log.debug("--------", .{});
     }
 };
@@ -408,14 +386,12 @@ test "Metadata" {
         .lastkey = data,
         .magicnumber = 123,
         .count = 456,
-        .datasize = 999,
     };
 
     var buf: [512]u8 = undefined;
     var rws = ReaderWriterSeeker.initBuf(&buf);
 
     try meta.write(&rws);
-    try meta.writeDatasize(meta.datasize, &rws);
     try rws.seekTo(0);
 
     var alloc = std.testing.allocator;
@@ -426,10 +402,9 @@ test "Metadata" {
     try std.testing.expectEqual(meta.count, meta2.count);
     try std.testing.expectEqual(meta.firstkey.col.ts, meta2.firstkey.col.ts);
     try std.testing.expectEqual(meta.lastkey.col.ts, meta2.lastkey.col.ts);
-    try std.testing.expectEqual(meta.datasize, meta2.datasize);
 }
 
-test "Data_row" {
+test "Data_Row" {
     var alloc = std.testing.allocator;
 
     var row = Row.new("hello", "world", Op.Upsert);
@@ -453,6 +428,7 @@ test "Data_row" {
 test "DataChunkWriter" {
     std.testing.log_level = .debug;
 
+    // Setup
     var alloc = std.testing.allocator;
 
     var first_t = std.time.nanoTimestamp();
@@ -470,46 +446,48 @@ test "DataChunkWriter" {
     // defer file.close();
     var file_rws = ReaderWriterSeeker.initFile(file);
 
-    var dcw = DataChunk.init(alloc);
+    // DataChunk
+    var original_chunk = DataChunk.init(alloc);
     // defer dcw.deinit();
-    try dcw.append(data);
-    try dcw.append(data2);
+    try original_chunk.append(data);
+    try original_chunk.append(data2);
 
+    try std.testing.expectEqual(first_t, original_chunk.mem.getLast().getKey(i128));
+    try std.testing.expectEqual(@as(f64, 200.2), original_chunk.mem.getLast().getVal(f64));
+
+    // DataChunk write
     var buf: [128]u8 = undefined;
     var rws = ReaderWriterSeeker.initBuf(&buf);
-
-    _ = try dcw.write(&rws);
-
-    try std.testing.expectEqual(second_t, dcw.mem.getLast().getKey(i128));
-    try std.testing.expectEqual(@as(f64, 123.2), dcw.mem.getLast().getVal(f64));
-
+    _ = try original_chunk.write(&rws);
     try rws.seekTo(0);
 
-    var chunk_reader = try DataChunk.read(&rws, Column, alloc);
-    defer chunk_reader.deinit();
+    // DataChunk read
+    var chunk_read = try DataChunk.read(&rws, Column, alloc);
+    defer chunk_read.deinit();
 
-    try std.testing.expectEqual(@as(usize, 0), chunk_reader.mem.items.len);
-    try chunk_reader.readData(Column);
-    try std.testing.expectEqual(@as(usize, 2), chunk_reader.mem.items.len);
-    try std.testing.expectEqual(col1.val, chunk_reader.mem.getLast().col.val);
+    try std.testing.expectEqual(original_chunk.mem.items.len, chunk_read.mem.items.len);
+    try std.testing.expectEqual(original_chunk.mem.getLast().col.val, chunk_read.mem.getLast().col.val);
 
+    // DataTable
     var table_writer = try DataTableWriter.init(data2, data, alloc);
     defer table_writer.deinit();
-    try table_writer.append(dcw);
+    try table_writer.append(original_chunk);
 
+    // DataTable write
     const bytes_written = try table_writer.write(&file_rws);
-    try std.testing.expectEqual(@as(usize, 100), bytes_written);
-    try file_rws.seekTo(0);
+    try std.testing.expectEqual(@as(usize, 138), bytes_written);
 
+    // DataTable read
     var table_reader = try DataTableReader.read(file, Column, alloc);
     defer table_reader.deinit();
     try std.testing.expectEqual(@as(usize, 1), table_reader.offsets.items.len);
+    try std.testing.expectEqual(@as(usize, 0), table_reader.meta.magicnumber);
+    try std.testing.expectEqual(first_t, table_reader.meta.firstkey.getTs());
+    try std.testing.expectEqual(@as(usize, 1), table_reader.meta.count);
 
-    var chunk_reader_2 = try table_reader.readChunkMetadata(0, Column, alloc);
-    defer chunk_reader_2.deinit();
-    try chunk_reader_2.readData(Column);
-    chunk_reader_2.meta.debug();
+    var chunk_read2 = try table_reader.readChunk(0, Column, alloc);
+    defer chunk_read2.deinit();
 
-    try std.testing.expectEqual(@as(usize, 2), chunk_reader_2.mem.items.len);
-    try std.testing.expectEqual(col1.ts, chunk_reader_2.mem.getLast().getTs());
+    try std.testing.expectEqual(chunk_read.mem.items.len, chunk_read2.mem.items.len);
+    try std.testing.expectEqual(col1.ts, chunk_read2.mem.getLast().getTs());
 }
