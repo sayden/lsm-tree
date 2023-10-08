@@ -12,6 +12,7 @@ const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeke
 const SstIndex = @import("./sst_index.zig").SstIndex;
 
 pub const WalHandler = WalHandlerTBuilder(Wal.InUse);
+
 pub fn WalHandlerTBuilder(comptime WalType: type) type {
     return struct {
         const Self = @This();

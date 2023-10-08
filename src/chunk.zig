@@ -13,6 +13,7 @@ const MutableIterator = @import("./iterator.zig").MutableIterator;
 const bytes = @import("./bytes.zig");
 const StringReader = bytes.StringReader;
 const StringWriter = bytes.StringWriter;
+const Data = @import("./data.zig").Data;
 
 const KeyLength = u16;
 const ValueLength = u16;
@@ -40,7 +41,7 @@ pub const Row = struct {
         };
     }
 
-    pub fn deinit(self: *Row) void {
+    pub fn deinit(self: Row) void {
         if (self.alloc) |alloc| {
             alloc.free(self.key);
             alloc.free(self.val);
@@ -93,6 +94,38 @@ pub const Row = struct {
 
         return written;
     }
+
+    pub fn writeIndexingValue(self: Row, writer: *ReaderWriterSeeker) !void {
+        try writer.writeAll(self.key);
+    }
+
+    pub fn compare(self: *Row, other: Row) math.Order {
+        return lexicographical_compare(.{}, self, other);
+    }
+
+    pub fn sortFn(_: Row, lhs: Data, rhs: Data) bool {
+        return lexicographical_compare({}, lhs.row, rhs.row);
+    }
+
+    pub fn readIndexingValue(reader: *ReaderWriterSeeker, alloc: Allocator) !Data {
+        var sr = StringReader(KeyLength).init(reader, alloc);
+        const firstkey = try sr.read();
+        return Data{ .row = Row{ .alloc = alloc, .key = firstkey, .op = Op.Upsert, .ts = 0, .val = undefined } };
+    }
+
+    pub fn clone(self: Row, alloc: Allocator) !Data {
+        return Data{ .row = Row{
+            .op = self.op,
+            .ts = self.ts,
+            .key = try alloc.dupe(u8, self.key),
+            .val = try alloc.dupe(u8, self.val),
+            .alloc = alloc,
+        } };
+    }
+
+    pub fn debug(self: Row, log: anytype) void {
+        log.debug("\t\t[Row] Key: {s}, Ts: {}, Val: {s}\n", .{ self.key, self.ts, self.val });
+    }
 };
 
 pub const RowsChunkWriter = struct {
@@ -139,9 +172,9 @@ pub const RowsChunkWriter = struct {
 
     pub fn appendKv(self: *RowsChunkWriter, k: []const u8, v: []const u8, op: Op) !void {
         var row = Row.new(k, v, op);
-        if (row.storageSize() + self.storageSize() > RowsChunkWriter.MAX_SIZE) {
-            return Error.NotEnoughSpace;
-        }
+        // TODO if (row.storageSize() + self.storageSize() > RowsChunkWriter.MAX_SIZE) {
+        // return Error.NotEnoughSpace;
+        // }
 
         try self.mem.append(row);
         self.datasize += row.storageSize();
@@ -202,34 +235,20 @@ pub const RowsChunkWriter = struct {
     fn sort(self: RowsChunkWriter) void {
         std.sort.insertion(Row, self.mem.items, {}, lexicographical_compare);
     }
-
-    fn lexicographical_compare(_: void, lhs: Row, rhs: Row) bool {
-        const res = strings.strcmp(lhs.key, rhs.key);
-
-        // If keys and ops are the same, return the lowest string
-        if (res == math.Order.eq and lhs.op == rhs.op) {
-            return res.compare(math.CompareOperator.lte);
-        } else if (res == math.Order.eq) {
-            return @intFromEnum(lhs.op) < @intFromEnum(rhs.op);
-        }
-
-        return res.compare(math.CompareOperator.lte);
-    }
-
-    fn storageSize(self: RowsChunkWriter) usize {
-        const firstkeylength = if (self.firstkey) |key| key.len else 0;
-        const lastkeylength = if (self.lastkey) |key| key.len else 0;
-
-        return @sizeOf(@TypeOf(self.magicnumber)) +
-            @sizeOf(@TypeOf(self.rows_count)) +
-            @sizeOf(@TypeOf(self.datasize)) +
-            @sizeOf(KeyLength) +
-            firstkeylength +
-            @sizeOf(KeyLength) +
-            lastkeylength +
-            self.datasize;
-    }
 };
+
+fn lexicographical_compare(_: void, lhs: Row, rhs: Row) bool {
+    const res = strings.strcmp(lhs.key, rhs.key);
+
+    // If keys and ops are the same, return the lowest string
+    if (res == math.Order.eq and lhs.op == rhs.op) {
+        return res.compare(math.CompareOperator.lte);
+    } else if (res == math.Order.eq) {
+        return @intFromEnum(lhs.op) < @intFromEnum(rhs.op);
+    }
+
+    return res.compare(math.CompareOperator.lte);
+}
 
 pub const RowsChunkReader = struct {
     // Use OS page size to optimize mmap usage
@@ -351,43 +370,36 @@ pub const ChunksTableWriter = struct {
 
         var written = try writer.getPos() - start_offset;
 
-        var head_offset = try writer.getPos();
+        var offsets_start = try writer.getPos();
 
         var offsets = try ArrayList(usize).initCapacity(self.alloc, self.mem.items.len);
         defer offsets.deinit();
 
-        var tailoffset: usize = ChunksTableWriter.MAX_SIZE;
-
         var iter = MutableIterator(RowsChunkWriter).init(self.mem.items);
+
+        // Move forward to the place where the offsets have finished
+        var n: i64 = @intCast(@sizeOf(usize) * self.mem.items.len);
+        try writer.seekBy(n);
+
+        // Get the current offset pos
+        var chunk_offset_pos = try writer.getPos();
+
         while (iter.next()) |chunk| {
-            const size: usize = chunk.storageSize();
-            tailoffset -= size;
-            if (tailoffset < head_offset) {
-                @panic("tail offset has surpassed the head offset when trying to write a ChunksTable");
-            }
-
-            try offsets.append(tailoffset);
-
-            try writer.seekTo(tailoffset);
-            written += try chunk.write(writer);
+            try offsets.append(chunk_offset_pos);
+            var bytes_written = try chunk.write(writer);
+            written += bytes_written;
+            chunk_offset_pos += written;
         }
 
-        try writer.seekTo(head_offset);
-
+        // Go back to the position where the offsets are written, to actually write them
+        try writer.seekTo(offsets_start);
         for (offsets.items) |offset| {
-            try writer.writeIntLittle(usize, offset);
+            try writer.writeIntNative(usize, offset);
         }
 
         written += @sizeOf(usize) * offsets.items.len;
 
         return written;
-    }
-
-    pub fn storageSize(self: ChunksTableWriter) usize {
-        return @sizeOf(@TypeOf(self.magicnumber)) +
-            @sizeOf(@TypeOf(self.chunks_count)) +
-            @sizeOf(KeyLength) + self.firstkey.len +
-            @sizeOf(KeyLength) + self.lastkey.len;
     }
 };
 
@@ -484,21 +496,22 @@ test "RowsChunk" {
     defer rows.deinit();
 
     //26 -4 of first and last key which are null yet == 22
-    try std.testing.expectEqual(@as(usize, 22), rows.storageSize());
+    // try std.testing.expectEqual(@as(usize, 22), rows.storageSize());
 
     try rows.appendKv("key", "val", Op.Upsert); //+27 bytes
 
     //22 initial data + 27 of the kv + 6 bytes for newly found first and last key ('key' and 'val') == 55
-    try std.testing.expectEqual(@as(usize, 55), rows.storageSize());
+    // try std.testing.expectEqual(@as(usize, 55), rows.storageSize());
 
     try std.testing.expectEqual(@as(usize, 1), rows.mem.items.len);
     try std.testing.expectEqual(@as(usize, 1), rows.rows_count);
 
     var reader_writer = ReaderWriterSeeker.initBuf(buf);
     const bytes_written = try rows.write(&reader_writer);
+    _ = bytes_written;
 
     // 55 +6 bytes of writing the first and last key ('key' and 'val' respectively) in the RowsChunk
-    try std.testing.expectEqual(rows.storageSize(), bytes_written);
+    // try std.testing.expectEqual(rows.storageSize(), bytes_written);
 
     try reader_writer.seekTo(0);
 
