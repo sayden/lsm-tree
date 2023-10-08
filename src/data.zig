@@ -14,22 +14,23 @@ const bytes = @import("./bytes.zig");
 const StringReader = bytes.StringReader;
 const StringWriter = bytes.StringWriter;
 const ChunkNs = @import("./chunk.zig");
-const Row = ChunkNs.Row;
+const Kv = ChunkNs.Kv;
 const ColumnNs = @import("./columnar.zig");
 const Column = ColumnNs.Column;
 
 pub const Error = error{
     NotEnoughSpace,
     EmptyWal,
+    TableFull,
 };
 
 pub const Data = union(enum) {
-    row: Row,
+    kv: Kv,
     col: Column,
 
-    pub fn new(comptime T: type, data: T) Data {
-        return switch (T) {
-            Row => return Data{ .row = data },
+    pub fn new(data: anytype) Data {
+        return switch (@TypeOf(data)) {
+            Kv => return Data{ .kv = data },
             inline else => return Data{ .col = data },
         };
     }
@@ -43,7 +44,7 @@ pub const Data = union(enum) {
     pub fn read(comptime T: type, reader: *ReaderWriterSeeker, alloc: Allocator) !Data {
         var result: T = try T.read(reader, alloc);
         return switch (T) {
-            Row => Data{ .row = result },
+            Kv => Data{ .kv = result },
             inline else => Data{ .col = result },
         };
     }
@@ -72,26 +73,6 @@ pub const Data = union(enum) {
         };
     }
 
-    pub fn getKey(self: *const Data, comptime T: type) T {
-        return switch (@TypeOf(self)) {
-            *Row => @as(*const Row, @ptrCast(self)).key,
-            inline else => @as(*const Column, @ptrCast(self)).ts,
-        };
-    }
-
-    pub fn getTs(self: Data) i128 {
-        return switch (self) {
-            inline else => |case| case.ts,
-        };
-    }
-
-    pub fn getVal(self: *const Data, comptime T: type) T {
-        return switch (@TypeOf(self)) {
-            *Row => @as(*const Row, @ptrCast(self)).val,
-            inline else => @as(*const Column, @ptrCast(self)).val,
-        };
-    }
-
     pub fn clone(self: Data, alloc: Allocator) !Data {
         return switch (self) {
             inline else => |case| case.clone(alloc),
@@ -108,42 +89,38 @@ pub const Data = union(enum) {
 pub const DataChunk = struct {
     // Use OS page size to optimize mmap usage
     const MAX_SIZE = std.mem.page_size;
+    const MAX_VALUES = 10;
 
-    meta: ?Metadata = null,
+    meta: Metadata,
 
     mem: ArrayList(Data),
 
     alloc: Allocator,
 
-    pub fn init(alloc: Allocator) DataChunk {
-        return DataChunk{
-            .mem = ArrayList(Data).init(alloc),
-            .alloc = alloc,
-        };
+    pub fn init(comptime T: type, alloc: Allocator) DataChunk {
+        return DataChunk{ .mem = ArrayList(Data).init(alloc), .alloc = alloc, .meta = Metadata{
+            .firstkey = T.default(),
+            .lastkey = T.default(),
+        } };
     }
 
     pub fn deinit(self: *DataChunk) void {
         var iter = MutableIterator(Data).init(self.mem.items);
-        while (iter.next()) |row| {
-            row.deinit();
+        while (iter.next()) |data| {
+            data.deinit();
         }
 
         self.mem.deinit();
-
-        if (self.meta) |*meta| {
-            meta.deinit();
-        }
+        self.meta.deinit();
     }
 
     pub fn append(self: *DataChunk, d: Data) !void {
-        try self.mem.append(d);
-        if (self.meta) |_| {} else {
-            self.meta = Metadata{
-                .firstkey = d,
-                .lastkey = d,
-            };
+        if (self.meta.count >= DataChunk.MAX_VALUES) {
+            return Error.NotEnoughSpace;
         }
-        self.meta.?.count += 1;
+
+        try self.mem.append(d);
+        self.meta.count += 1;
     }
 
     pub fn read(reader: *ReaderWriterSeeker, comptime T: type, alloc: Allocator) !DataChunk {
@@ -174,13 +151,13 @@ pub const DataChunk = struct {
 
         self.sort();
 
-        self.meta.?.firstkey = self.mem.items[0];
-        self.meta.?.lastkey = self.mem.items[self.mem.items.len - 1];
+        self.meta.firstkey = self.mem.items[0];
+        self.meta.lastkey = self.mem.items[self.mem.items.len - 1];
 
         var chunk_zero_offset = try writer.getPos();
 
         // write metadata header for this chunk
-        try self.meta.?.write(writer);
+        try self.meta.write(writer);
 
         var iter = Iterator(Data).init(self.mem.items);
         while (iter.next()) |data| {
@@ -199,17 +176,18 @@ pub const DataChunk = struct {
 
 pub const DataTableWriter = struct {
     const log = std.log.scoped(.DataTableWriter);
+    const MAX_VALUES = 100;
 
     meta: Metadata,
 
     mem: ArrayList(DataChunk),
     alloc: Allocator,
 
-    pub fn init(firstkey: Data, lastkey: Data, alloc: Allocator) !DataTableWriter {
+    pub fn init(comptime T: type, alloc: Allocator) !DataTableWriter {
         return DataTableWriter{
             .meta = Metadata{
-                .firstkey = try firstkey.clone(alloc),
-                .lastkey = try lastkey.clone(alloc),
+                .firstkey = T.default(),
+                .lastkey = T.default(),
             },
             .mem = ArrayList(DataChunk).init(alloc),
             .alloc = alloc,
@@ -228,8 +206,55 @@ pub const DataTableWriter = struct {
     }
 
     pub fn append(self: *DataTableWriter, rows: DataChunk) !void {
+        if (self.meta.count >= DataTableWriter.MAX_VALUES) {
+            return Error.TableFull;
+        }
+
         try self.mem.append(rows);
         self.meta.count += 1;
+    }
+
+    pub fn writeBackwards(self: *DataTableWriter, writer: *ReaderWriterSeeker) !usize {
+        var start_size: usize = try writer.getPos();
+
+        // write the metadata header
+        try self.meta.write(writer);
+
+        var offsets = try ArrayList(usize).initCapacity(self.alloc, self.mem.items.len);
+        defer offsets.deinit();
+
+        // Move forward to the place where the offsets should have finished
+        const start_offset = try writer.getPos();
+        const n: i64 = @intCast(@sizeOf(usize) * self.mem.items.len);
+        try writer.seekBy(n);
+
+        // Get the current offset pos, after moving forward
+        var offset_sentinel = try writer.getPos();
+
+        var iter = MutableIterator(DataChunk).init(self.mem.items);
+        while (iter.next()) |chunk| {
+            // we are going to write in position 'offset_sentinel', store this position in the array
+            // to write it later on the file
+            try offsets.append(offset_sentinel);
+
+            // write the chunk data
+            var bytes_written = try chunk.write(writer);
+
+            // move the sentinel forward
+            offset_sentinel += bytes_written;
+        }
+
+        const final_pos = offset_sentinel;
+
+        // go back to the position to write the offsets list
+        try writer.seekTo(start_offset);
+
+        // Finally, write the array of offsets
+        for (offsets.items) |offset| {
+            try writer.writeIntNative(usize, offset);
+        }
+
+        return final_pos - start_size;
     }
 
     pub fn write(self: *DataTableWriter, writer: *ReaderWriterSeeker) !usize {
@@ -379,7 +404,7 @@ const Metadata = struct {
 
 test "Metadata" {
     const col1 = Column.new(99999, 123.2, Op.Upsert);
-    const data = Data.new(Column, col1);
+    const data = Data.new(col1);
 
     var meta = Metadata{
         .firstkey = data,
@@ -407,9 +432,9 @@ test "Metadata" {
 test "Data_Row" {
     var alloc = std.testing.allocator;
 
-    var row = Row.new("hello", "world", Op.Upsert);
+    var row = Kv.new("hello", "world", Op.Upsert);
 
-    var data = Data{ .row = row };
+    var data = Data{ .kv = row };
     defer data.deinit();
 
     var buf: [64]u8 = undefined;
@@ -419,10 +444,10 @@ test "Data_Row" {
 
     try rws.seekTo(0);
 
-    var row2 = try Data.read(Row, &rws, alloc);
+    var row2 = try Data.read(Kv, &rws, alloc);
     defer row2.deinit();
 
-    try std.testing.expectEqualStrings("hello", row2.row.key);
+    try std.testing.expectEqualStrings("hello", row2.kv.key);
 }
 
 test "DataChunkWriter" {
@@ -437,8 +462,8 @@ test "DataChunkWriter" {
     var col1 = Column.new(second_t, 123.2, Op.Upsert);
     var col2 = Column.new(first_t, 200.2, Op.Upsert);
 
-    var data = Data.new(Column, col1);
-    var data2 = Data.new(Column, col2);
+    var data = Data.new(col1);
+    var data2 = Data.new(col2);
 
     var tmpdir = std.testing.tmpDir(.{});
     defer tmpdir.cleanup();
@@ -447,13 +472,13 @@ test "DataChunkWriter" {
     var file_rws = ReaderWriterSeeker.initFile(file);
 
     // DataChunk
-    var original_chunk = DataChunk.init(alloc);
+    var original_chunk = DataChunk.init(Column, alloc);
     // defer dcw.deinit();
     try original_chunk.append(data);
     try original_chunk.append(data2);
 
-    try std.testing.expectEqual(first_t, original_chunk.mem.getLast().getKey(i128));
-    try std.testing.expectEqual(@as(f64, 200.2), original_chunk.mem.getLast().getVal(f64));
+    try std.testing.expectEqual(first_t, original_chunk.mem.getLast().col.ts);
+    try std.testing.expectEqual(@as(f64, 200.2), original_chunk.mem.getLast().col.val);
 
     // DataChunk write
     var buf: [128]u8 = undefined;
@@ -469,7 +494,7 @@ test "DataChunkWriter" {
     try std.testing.expectEqual(original_chunk.mem.getLast().col.val, chunk_read.mem.getLast().col.val);
 
     // DataTable
-    var table_writer = try DataTableWriter.init(data2, data, alloc);
+    var table_writer = try DataTableWriter.init(Column, alloc);
     defer table_writer.deinit();
     try table_writer.append(original_chunk);
 
@@ -482,12 +507,12 @@ test "DataChunkWriter" {
     defer table_reader.deinit();
     try std.testing.expectEqual(@as(usize, 1), table_reader.offsets.items.len);
     try std.testing.expectEqual(@as(usize, 0), table_reader.meta.magicnumber);
-    try std.testing.expectEqual(first_t, table_reader.meta.firstkey.getTs());
+    try std.testing.expectEqual(first_t, table_reader.meta.firstkey.col.ts);
     try std.testing.expectEqual(@as(usize, 1), table_reader.meta.count);
 
     var chunk_read2 = try table_reader.readChunk(0, Column, alloc);
     defer chunk_read2.deinit();
 
     try std.testing.expectEqual(chunk_read.mem.items.len, chunk_read2.mem.items.len);
-    try std.testing.expectEqual(col1.ts, chunk_read2.mem.getLast().getTs());
+    try std.testing.expectEqual(col1.ts, chunk_read2.mem.getLast().col.ts);
 }

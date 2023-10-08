@@ -107,6 +107,14 @@ pub const Column = struct {
     pub fn debug(self: Column, log: anytype) void {
         log.debug("\t\t[Column] Ts: {}, Val: {}", .{ self.ts, self.val });
     }
+
+    pub fn default() Data {
+        return Data{ .col = Column{
+            .op = Op.Skip,
+            .ts = 0,
+            .val = 0,
+        } };
+    }
 };
 
 test "Column" {
