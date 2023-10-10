@@ -100,11 +100,13 @@ pub const Kv = struct {
     }
 
     pub fn writeIndexingValue(self: Kv, writer: *ReaderWriterSeeker) !void {
+        try writer.writeIntNative(KeyLength, @intCast(self.key.len));
         try writer.writeAll(self.key);
     }
 
-    pub fn compare(self: *Kv, other: Kv) math.Order {
-        return lexicographical_compare(.{}, self, other);
+    // comptime lessThanFn: fn (@TypeOf(context), lhs: T, rhs: T) bool,
+    pub fn compare(self: Kv, other: Data) bool {
+        return lexicographical_compare({}, self, other.kv);
     }
 
     pub fn sortFn(_: Kv, lhs: Data, rhs: Data) bool {

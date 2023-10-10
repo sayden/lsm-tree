@@ -42,12 +42,12 @@ pub fn MutableIterator(comptime T: anytype) type {
             };
         }
 
-        pub fn next(self: *Self) ?*T {
+        pub fn next(self: *Self) ?T {
             if (self.pos == self.items.len) {
                 return null;
             }
 
-            var ptr = &self.items[self.pos];
+            var ptr = self.items[self.pos];
             self.pos += 1;
             return ptr;
         }

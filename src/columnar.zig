@@ -87,8 +87,8 @@ pub const Column = struct {
         } };
     }
 
-    pub fn compare(self: *Column, other: Column) math.Order {
-        return math.order(self.ts, other.ts);
+    pub fn compare(self: Column, other: Data) bool {
+        return math.order(self.ts, other.col.ts).compare(math.CompareOperator.lt);
     }
 
     pub fn sortFn(_: Column, lhs: Data, rhs: Data) bool {
