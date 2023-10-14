@@ -123,7 +123,17 @@ pub const Kv = struct {
         log.debug("\t\t[Row] Key: {s}, Ts: {}, Val: {s}\n", .{ self.key, self.ts, self.val });
     }
 
-    pub fn default() Data {
+    pub fn defaultFirstKey() Data {
+        return Data{ .kv = Kv{
+            .op = Op.Skip,
+            .ts = 0,
+            .key = undefined,
+            .val = undefined,
+            .alloc = undefined,
+        } };
+    }
+
+    pub fn defaultLastKey() Data {
         return Data{ .kv = Kv{
             .op = Op.Skip,
             .ts = 0,

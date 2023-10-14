@@ -98,10 +98,18 @@ pub const Column = struct {
         log.debug("\t\t[Column] Ts: {}, Val: {}", .{ self.ts, self.val });
     }
 
-    pub fn default() Data {
+    pub fn defaultLastKey() Data {
         return Data{ .col = Column{
             .op = Op.Skip,
             .ts = 0,
+            .val = 0,
+        } };
+    }
+
+    pub fn defaultFirstKey() Data {
+        return Data{ .col = Column{
+            .op = Op.Skip,
+            .ts = std.math.maxInt(i128),
             .val = 0,
         } };
     }

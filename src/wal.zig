@@ -44,7 +44,7 @@ pub fn Wal(comptime T: type) type {
             var chunk_writer = ReaderWriterSeeker.initFile(chunk_tmp_file);
 
             return Self{
-                .meta = Metadata.initDefault(T),
+                .meta = Metadata.initDefault(Metadata.Kind.Wal, T),
                 .current_chunk = Chunk.init(T, alloc),
                 .chunks = ArrayList(Chunk).init(alloc),
                 .wal_writer = wal_writer,
@@ -218,8 +218,8 @@ pub fn Wal(comptime T: type) type {
             var offset_sentinel = try writer.getPos();
 
             // store the first and last key of the entire index
-            var firstkey: ?Data = undefined;
-            var lastkey: ?Data = undefined;
+            var firstkey: ?Data = null;
+            var lastkey: ?Data = null;
 
             for (self.chunks.items) |*chunk| {
                 // go backwards just enough to write the chunk
@@ -236,20 +236,7 @@ pub fn Wal(comptime T: type) type {
                 });
 
                 // Update the first and last record from the index.
-                if (firstkey) |fk| {
-                    if (fk.compare(chunk.meta.firstkey)) {
-                        firstkey = chunk.meta.firstkey;
-                    }
-                } else {
-                    firstkey = chunk.meta.firstkey;
-                    lastkey = chunk.meta.lastkey;
-                }
-
-                if (lastkey) |lk| {
-                    if (lk.compare(chunk.meta.lastkey)) {
-                        lastkey = chunk.meta.lastkey;
-                    }
-                }
+                Metadata.updateFirstAndLastKey(&firstkey, &lastkey, chunk.meta);
 
                 // write the chunk data
                 var bytes_written = try chunk.write(writer, true);
@@ -305,19 +292,7 @@ pub fn Wal(comptime T: type) type {
                     return undefined;
                 };
 
-                // Update the first and last record from the index.
-                if (firstkey) |fk| {
-                    if (fk.compare(chunk.meta.firstkey)) {
-                        firstkey = chunk.meta.firstkey;
-                    }
-
-                    if (lastkey.?.compare(chunk.meta.lastkey)) {
-                        lastkey = chunk.meta.lastkey;
-                    }
-                } else {
-                    firstkey = chunk.meta.firstkey;
-                    lastkey = chunk.meta.lastkey;
-                }
+                Metadata.updateFirstAndLastKey(&firstkey, &lastkey, chunk.meta);
 
                 try chunks.append(chunk);
             }
@@ -336,33 +311,22 @@ pub fn Wal(comptime T: type) type {
         pub fn recoverChunkFile(chunk_file: File, alloc: Allocator) !Chunk {
             var tmpreader = ReaderWriterSeeker.initFile(chunk_file);
 
-            // store the first and last key of the entire index
-            var firstkey: ?Data = null;
-            var lastkey: ?Data = null;
-
             const stattmp = try chunk_file.stat();
             log.debug("Tmp file has {} bytes", .{stattmp.size});
 
             // Read the records that weren't persisted as a chunk
             var chunk = Chunk.init(T, alloc);
+            errdefer chunk.deinit();
+
+            var data_not_found: bool = true;
             while (true) {
                 var data_or_error = Data.read(T, &tmpreader, alloc);
                 if (data_or_error) |data| {
                     _ = try chunk.append(data);
+                    data_not_found = false;
 
                     // Update the first and last record from the index.
-                    if (firstkey) |stored_key| {
-                        if (!stored_key.compare(data)) {
-                            firstkey = data;
-                        }
-
-                        if (lastkey.?.compare(data)) {
-                            lastkey = data;
-                        }
-                    } else {
-                        firstkey = data;
-                        lastkey = data;
-                    }
+                    chunk.meta.updateSelfFirstAndLastKey(data);
                 } else |err| {
                     if (err == error.EndOfStream) {
                         break;
@@ -372,7 +336,7 @@ pub fn Wal(comptime T: type) type {
                 }
             }
 
-            if (firstkey == null) {
+            if (data_not_found) {
                 return error.EmptyChunk;
             }
 

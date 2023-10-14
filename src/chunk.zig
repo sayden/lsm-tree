@@ -22,7 +22,7 @@ pub const Chunk = struct {
     alloc: Allocator,
 
     pub fn init(comptime T: type, alloc: Allocator) Chunk {
-        return Chunk{ .mem = ArrayList(Data).init(alloc), .alloc = alloc, .meta = Metadata.initDefault(T) };
+        return Chunk{ .mem = ArrayList(Data).init(alloc), .alloc = alloc, .meta = Metadata.initDefault(Metadata.Kind.Chunk, T) };
     }
 
     pub fn deinit(self: Chunk) void {
@@ -38,18 +38,7 @@ pub const Chunk = struct {
         try self.mem.append(d);
         self.meta.count += 1;
 
-        // Update the first and last record from the index.
-        if (d.compare(self.meta.lastkey)) {
-            self.meta.firstkey = d;
-        }
-
-        if (self.meta.lastkey.compare(d)) {
-            self.meta.lastkey = d;
-        }
-
-        if (self.meta.count >= Chunk.MAX_VALUES) {
-            return .ChunkFull;
-        }
+        self.meta.updateSelfFirstAndLastKey(d);
 
         return .Ok;
     }
