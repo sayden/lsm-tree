@@ -3,29 +3,19 @@ const os = std.os;
 const system = std.os.system;
 const fs = std.fs;
 const math = std.math;
-const Op = @import("./ops.zig").Op;
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
+
+const Op = @import("./ops.zig").Op;
 const strings = @import("./strings.zig");
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
-const Iterator = @import("./iterator.zig").Iterator;
-const MutableIterator = @import("./iterator.zig").MutableIterator;
 const bytes = @import("./bytes.zig");
+const Data = @import("./data.zig").Data;
 const StringReader = bytes.StringReader;
 const StringWriter = bytes.StringWriter;
-const DataNs = @import("./data.zig");
-const Data = DataNs.Data;
-const DataChunk = DataNs.DataChunk;
-const DataTableReader = DataNs.DataTableReader;
-const DataTableWriter = DataNs.DataTableWriter;
 
 const KeyLength = u16;
 const ValueLength = u16;
-
-pub const Error = error{
-    NotEnoughSpace,
-    EmptyWal,
-};
 
 pub const Kv = struct {
     op: Op,
@@ -116,7 +106,7 @@ pub const Kv = struct {
     pub fn readIndexingValue(reader: *ReaderWriterSeeker, alloc: Allocator) !Data {
         var sr = StringReader(KeyLength).init(reader, alloc);
         const firstkey = try sr.read();
-        return Data{ .row = Kv{ .alloc = alloc, .key = firstkey, .op = Op.Upsert, .ts = 0, .val = undefined } };
+        return Data{ .kv = Kv{ .alloc = alloc, .key = firstkey, .op = Op.Upsert, .ts = 0, .val = undefined } };
     }
 
     pub fn clone(self: Kv, alloc: Allocator) !Data {

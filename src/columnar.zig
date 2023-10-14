@@ -13,27 +13,16 @@ const MutableIterator = @import("./iterator.zig").MutableIterator;
 const bytes = @import("./bytes.zig");
 const StringReader = bytes.StringReader;
 const StringWriter = bytes.StringWriter;
-const DataNs = @import("./data.zig");
-const Data = DataNs.Data;
-const DataChunk = DataNs.DataChunk;
-const DataTableReader = DataNs.DataTableReader;
-const DataTableWriter = DataNs.DataTableWriter;
+const Data = @import("./data.zig").Data;
 
 const KeyLength = u16;
 const ValueLength = u16;
-
-pub const Error = error{
-    NotEnoughSpace,
-    EmptyWal,
-};
 
 pub const Column = struct {
     op: Op,
 
     ts: i128,
     val: f64,
-
-    alloc: ?Allocator = null,
 
     pub fn new(ts: i128, v: f64, op: Op) Column {
         return Column{
@@ -87,8 +76,9 @@ pub const Column = struct {
         } };
     }
 
+    /// Returns true if self < other
     pub fn compare(self: Column, other: Data) bool {
-        return math.order(self.ts, other.col.ts).compare(math.CompareOperator.lt);
+        return self.ts < other.col.ts;
     }
 
     pub fn sortFn(_: Column, lhs: Data, rhs: Data) bool {

@@ -2,23 +2,29 @@ const std = @import("std");
 
 pub const log_level: std.log.log_level = .debug;
 comptime {
-    _ = @import("disk_manager.zig");
-    _ = @import("header.zig");
-    _ = @import("record.zig");
-    _ = @import("sst.zig");
-    _ = @import("sst_manager.zig");
-    _ = @import("wal_handler.zig");
     _ = @import("wal.zig");
+    _ = @import("data.zig");
+    _ = @import("index_entry.zig");
+    _ = @import("metadata.zig");
+    _ = @import("storage_manager.zig");
+    _ = @import("file_index.zig");
+
+    // _ = @import("header.zig");
+    // _ = @import("record.zig");
+    // _ = @import("sst.zig");
+    // _ = @import("sst_manager.zig");
+    // _ = @import("wal_handler.zig");
+    // _ = @import("wal.zig");
 }
 
-const DiskManager = @import("./disk_manager.zig").DiskManager;
-const WalNs = @import("./wal.zig");
-const WalHandler = @import("./wal_handler.zig").WalHandler;
-const SstNs = @import("./sst_manager.zig");
-const SstManager = SstNs.SstManager;
-const Op = @import("./ops.zig").Op;
-const RecordNs = @import("./record.zig");
-const Record = RecordNs.Record;
+// const StorageManager = @import("./storage_manager.zig").StorageManager;
+// const WalNs = @import("./wal.zig");
+// const WalHandler = @import("./wal_handler.zig").WalHandler;
+// const SstNs = @import("./sst_manager.zig");
+// const SstManager = SstNs.SstManager;
+// const Op = @import("./ops.zig").Op;
+// const RecordNs = @import("./record.zig");
+// const Record = RecordNs.Record;
 
 // test "end_to_end_1" {
 //     var alloc = std.testing.allocator;

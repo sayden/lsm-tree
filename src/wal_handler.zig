@@ -3,7 +3,7 @@ const Allocator = std.mem.Allocator;
 
 const RecordNS = @import("./record.zig");
 const Record = RecordNS.Record;
-const DiskManager = @import("./disk_manager.zig").DiskManager;
+const StorageManager = @import("./storage_manager.zig").StorageManager;
 const Op = @import("./ops.zig").Op;
 const FileData = @import("./disk_manager.zig").FileData;
 const Wal = @import("./wal.zig");
@@ -18,14 +18,14 @@ pub fn WalHandlerTBuilder(comptime WalType: type) type {
         const Self = @This();
         const log = std.log.scoped(.WalHandler);
 
-        disk_manager: *DiskManager,
+        disk_manager: *StorageManager,
 
         current: WalType.Type,
         next: WalType.Type,
 
         alloc: Allocator,
 
-        pub fn init(dm: *DiskManager, wal_size: usize, alloc: Allocator) !*Self {
+        pub fn init(dm: *StorageManager, wal_size: usize, alloc: Allocator) !*Self {
             var wh: *Self = try alloc.create(Self);
 
             wh.alloc = alloc;
@@ -146,7 +146,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 test "wal_handler_append" {
     var alloc = std.testing.allocator;
 
-    var dm = try DiskManager.init("/tmp", alloc);
+    var dm = try StorageManager.init("/tmp", alloc);
     defer dm.deinit();
 
     var wh = try WalHandler.init(dm, 512, alloc);
@@ -182,7 +182,7 @@ test "wal_handler_append" {
 test "wal_handler_persist" {
     var alloc = std.testing.allocator;
 
-    var dm = try DiskManager.init("/tmp", alloc);
+    var dm = try StorageManager.init("/tmp", alloc);
     defer dm.deinit();
 
     var wh = try WalHandler.init(dm, 512, alloc);

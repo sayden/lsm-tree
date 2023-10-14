@@ -1,198 +1,608 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const ArrayList = std.ArrayList;
+const fs = std.fs;
+const File = std.fs.File;
 
-const DiskManager = @import("./disk_manager.zig").DiskManager;
+const StorageManager = @import("./storage_manager.zig").StorageManager;
 const Op = @import("./ops.zig").Op;
-const FileData = @import("./disk_manager.zig").FileData;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
-const DataNs = @import("./data.zig");
-const DataChunk = DataNs.DataChunk;
-const DataTableWriter = DataNs.DataTableWriter;
-const ChunkError = DataNs.Error;
-const KvNs = @import("./chunk.zig");
+const ChunkNs = @import("./chunk.zig");
+const ChunkError = ChunkNs.Error;
+const Chunk = ChunkNs.Chunk;
+const KvNs = @import("./kv.zig");
 const Column = @import("./columnar.zig").Column;
 const Kv = KvNs.Kv;
-const Data = DataNs.Data;
+const Data = @import("./data.zig").Data;
+const Metadata = @import("./metadata.zig").Metadata;
+const IndexItem = @import("./index_entry.zig").IndexEntry;
+const FileIndex = @import("./file_index.zig").FileIndex;
+const Iterator = @import("./iterator.zig").Iterator;
+const strings = @import("./strings.zig");
 
-pub fn WalHandler(comptime T: type) type {
+const log = std.log.scoped(.Wal);
+
+pub fn Wal(comptime T: type) type {
     return struct {
         const Self = @This();
-        const log = std.log.scoped(.WalHandler);
+        const Error = error{EmptyWal};
+        pub const MAX_VALUES = 100;
+        pub const MAX_SIZE = 1_000;
+        // const MAX_SIZE = 128_000_000;
 
-        disk_manager: *DiskManager,
+        meta: Metadata,
+        datasize: usize = 0,
+        wal_writer: ReaderWriterSeeker,
+        chunk_writer: ReaderWriterSeeker,
 
-        current: DataChunk,
-
-        table: DataTableWriter,
-
+        current_chunk: Chunk,
+        chunks: ArrayList(Chunk),
         alloc: Allocator,
 
-        pub fn init(dm: *DiskManager, alloc: Allocator) !*Self {
-            var wh: *Self = try alloc.create(Self);
+        pub fn init(wal_tmp_file: File, chunk_tmp_file: File, alloc: Allocator) !Self {
+            var wal_writer = ReaderWriterSeeker.initFile(wal_tmp_file);
+            var chunk_writer = ReaderWriterSeeker.initFile(chunk_tmp_file);
 
-            wh.alloc = alloc;
-            wh.disk_manager = dm;
-
-            // Create a WAL to use as current
-            wh.current = DataChunk.init(T, alloc);
-            wh.table = try DataTableWriter.init(T, alloc);
-
-            return wh;
+            return Self{
+                .meta = Metadata.initDefault(T),
+                .current_chunk = Chunk.init(T, alloc),
+                .chunks = ArrayList(Chunk).init(alloc),
+                .wal_writer = wal_writer,
+                .chunk_writer = chunk_writer,
+                .alloc = alloc,
+            };
         }
 
-        /// Persist the current WAL and deinitializes everything.
-        /// Returns the absolute file path of the file created
-        /// with the contents of the current WAL, if an allocator is passed
-        pub fn deinit(self: *Self) void {
-            // remove empty files first
-            self.current.deinit();
-            self.table.deinit();
+        pub fn initRecover(sm: *StorageManager, recovered_wal: ?RecoveredWal, recovered_chunk: ?Chunk, alloc: Allocator) !Self {
+            var wal_tmp_file = try sm.getNewFile("wal");
+            var chunk_tmp_file = try sm.getNewFile("chk");
 
-            self.alloc.destroy(self);
-        }
-
-        pub fn persistCurrent(self: *Self, alloc: Allocator) !?FileData {
-            if (self.current.meta.count == 0) {
-                return null;
+            if (recovered_wal) |wal| {
+                return initRecoverWal(sm, wal, alloc);
+            } else if (recovered_chunk) |*chunk| {
+                defer chunk.deinit();
+                return initRecoverChunk(sm, @constCast(chunk), alloc);
+            } else if (recovered_chunk == null and recovered_wal == null) {
+                return init(wal_tmp_file, chunk_tmp_file, alloc);
             }
 
-            return self.switchChunk(alloc);
+            // Otherwise, both types have been found
+
+            var wal_writer = ReaderWriterSeeker.initFile(wal_tmp_file);
+            var chunk_writer = ReaderWriterSeeker.initFile(chunk_tmp_file);
+
+            return Self{
+                .meta = Metadata.initDefault(T),
+                .current_chunk = recovered_chunk.?,
+                .chunks = recovered_wal.?.chunks,
+                .wal_writer = wal_writer,
+                .alloc = alloc,
+                .chunk_writer = chunk_writer,
+            };
         }
 
-        // pub fn persist(self: *Self, wal: DataChunk, alloc: Allocator) !?FileData {
-        //     if (wal.ctx.header.total_records == 0) {
-        //         return null;
-        //     }
+        pub fn initRecoverWal(sm: *StorageManager, recovered_wal: RecoveredWal, alloc: Allocator) !Self {
+            var wal_tmp_file = try sm.getNewFile("wal");
+            var chunk_tmp_file = try sm.getNewFile("chk");
 
-        //     //Get a new file to persist the wal
-        //     var fileData = try self.disk_manager.getNewFile("sst", alloc);
-        //     errdefer fileData.deinit();
+            var wal_writer = ReaderWriterSeeker.initFile(wal_tmp_file);
+            var chunk_writer = ReaderWriterSeeker.initFile(chunk_tmp_file);
 
-        //     var ws = ReaderWriterSeeker.initFile(fileData.file);
-        //     _ = try wal.persist(&ws);
+            return Self{
+                .meta = Metadata.init(recovered_wal.firstkey, recovered_wal.lastkey),
+                .current_chunk = Chunk.init(T, alloc),
+                .chunks = recovered_wal.chunks,
+                .wal_writer = wal_writer,
+                .alloc = alloc,
+                .chunk_writer = chunk_writer,
+            };
+        }
 
-        //     return fileData;
-        // }
+        pub fn initRecoverChunk(sm: *StorageManager, recovered_chunk: *Chunk, alloc: Allocator) !Self {
+            var wal_tmp_file = try sm.getNewFile("wal");
+            var chunk_tmp_file = try sm.getNewFile("chk");
 
-        pub fn append(self: *Self, d: Data, alloc: Allocator) !?FileData {
-            self.current.append(d) catch |err| {
-                switch (err) {
-                    ChunkError.NotEnoughSpace => {
-                        var maybe_filedata = try self.switchChunk(alloc);
-                        try self.current.append(d);
-                        if (maybe_filedata) |filedata| {
-                            return filedata;
+            var wal_writer = ReaderWriterSeeker.initFile(wal_tmp_file);
+            var chunk_writer = ReaderWriterSeeker.initFile(chunk_tmp_file);
+            _ = try recovered_chunk.write(&chunk_writer, false);
+            defer recovered_chunk.deinit();
+
+            return Self{
+                .meta = Metadata.init(try recovered_chunk.meta.firstkey.clone(alloc), try recovered_chunk.meta.lastkey.clone(alloc)),
+                .current_chunk = Chunk.init(T, alloc),
+                .chunks = ArrayList(Chunk).init(alloc),
+                .wal_writer = wal_writer,
+                .alloc = alloc,
+                .chunk_writer = chunk_writer,
+            };
+        }
+
+        /// The StorageManager is not stored into the Wal and it is just used to create
+        /// some files required to setup the Wal.
+        pub fn initWithStorageManager(dm: *StorageManager, alloc: Allocator) !Self {
+            var wal_file = try dm.getNewFile("wal");
+            var chunks_file = try dm.getNewFile("chk");
+            return Self.init(wal_file, chunks_file, alloc);
+        }
+
+        pub fn deinit(self: Self) void {
+            self.meta.deinit();
+
+            for (self.chunks.items) |*rows| {
+                rows.deinit();
+            }
+
+            self.wal_writer.file.close();
+            self.chunk_writer.file.close();
+
+            self.current_chunk.deinit();
+            self.chunks.deinit();
+        }
+
+        pub const AppendResult = enum { TableFull, Ok };
+
+        /// Appends a new Data to the current chunk. Triggers switchChunk if `ChunkFull` is
+        /// returned when attempting to append to the chunk. It can return `TableFull` which
+        /// still appends the data and the underlying chunk (no need to retry)
+        pub fn append(self: *Self, d: Data) !AppendResult {
+            _ = try d.write(&self.chunk_writer);
+
+            const result = try self.current_chunk.append(d);
+            return switch (result) {
+                .ChunkFull => self.switchChunk(self.alloc),
+                .Ok => AppendResult.Ok,
+            };
+        }
+
+        /// stores the current chunk, creates a new one
+        pub fn switchChunk(self: *Self, alloc: Allocator) !AppendResult {
+            const result = try self.appendChunk(self.current_chunk);
+
+            //Remove the data from the current Chunk Wal
+
+            var new_chunk_file = try resetTmpFile(self.chunk_writer.file);
+            self.chunk_writer = ReaderWriterSeeker.initFile(new_chunk_file);
+
+            var new_chunk = Chunk.init(T, alloc);
+            self.current_chunk = new_chunk;
+
+            return result;
+        }
+
+        /// appends the chunk into the current memory and wal disk.
+        /// Returns error if the memory has trespassed the current limit.
+        pub fn appendChunk(self: *Self, chunk: Chunk) !AppendResult {
+            try self.mustAppendChunk(chunk);
+
+            if (chunk.size) |chunksize| {
+                if (self.datasize + chunksize >= Self.MAX_SIZE) {
+                    return .TableFull;
+                }
+            } else {
+                return ChunkError.UnknownChunkSize;
+            }
+
+            return .Ok;
+        }
+
+        fn mustAppendChunk(self: *Self, chunk: Chunk) !void {
+            var mutablechunk = @constCast(&chunk);
+            _ = try mutablechunk.write(&self.wal_writer, true);
+            try self.chunks.append(mutablechunk.*);
+            self.datasize += chunk.size.?;
+            self.meta.count += 1;
+        }
+
+        /// Writes the contents of the Table into file, which is enlarged to MAX_SIZE, the format is the following:
+        ///
+        /// Metadata
+        /// [1..IndexData]
+        /// [1..Chunk]
+        ///
+        pub fn persist(self: *Self, file: File) !usize {
+            if (self.chunks.items.len == 0) {
+                return 0;
+            }
+
+            var rws = ReaderWriterSeeker.initFile(file);
+            var writer = &rws;
+
+            // Move forward to the end of the file
+            try writer.seekBy(Self.MAX_SIZE);
+
+            // create the index array
+            var offsets = try ArrayList(IndexItem).initCapacity(self.alloc, self.chunks.items.len);
+            defer offsets.deinit();
+
+            // Get the current offset pos, after moving forward, this should be the same than TableWriter.MAX_SIZE
+            var offset_sentinel = try writer.getPos();
+
+            // store the first and last key of the entire index
+            var firstkey: ?Data = undefined;
+            var lastkey: ?Data = undefined;
+
+            for (self.chunks.items) |*chunk| {
+                // go backwards just enough to write the chunk
+                const size: i64 = @as(i64, @intCast(chunk.size.?));
+                try writer.seekBy(-size);
+                offset_sentinel = try writer.getPos();
+
+                // we are going to write in position 'offset_sentinel', store this position in the array
+                // to write it later on the file
+                try offsets.append(IndexItem{
+                    .offset = offset_sentinel,
+                    .firstkey = chunk.meta.firstkey,
+                    .lastkey = chunk.meta.lastkey,
+                });
+
+                // Update the first and last record from the index.
+                if (firstkey) |fk| {
+                    if (fk.compare(chunk.meta.firstkey)) {
+                        firstkey = chunk.meta.firstkey;
+                    }
+                } else {
+                    firstkey = chunk.meta.firstkey;
+                    lastkey = chunk.meta.lastkey;
+                }
+
+                if (lastkey) |lk| {
+                    if (lk.compare(chunk.meta.lastkey)) {
+                        lastkey = chunk.meta.lastkey;
+                    }
+                }
+
+                // write the chunk data
+                var bytes_written = try chunk.write(writer, true);
+
+                // Move backwards again, to the position where this chunk began writing
+                try writer.seekBy(-@as(i64, @intCast(chunk.size.?)));
+                if (bytes_written != chunk.size) {
+                    std.debug.print("{} != {}\n", .{ bytes_written, chunk.size.? });
+                    @panic("regression");
+                }
+            }
+
+            // Once chunks are written, we can come back to the beginning of the file
+            try writer.seekTo(0);
+
+            // update metadata with the info about the first and last key
+            self.meta.firstkey = firstkey.?;
+            self.meta.lastkey = lastkey.?;
+
+            // write the metadata header
+            try self.meta.write(writer);
+
+            // Finally, write the array of indices
+            for (offsets.items) |index| {
+                try index.write(writer);
+            }
+
+            // if we have reached this point, the current WAL can be truncated
+            var new_wal_file = try resetTmpFile(self.wal_writer.file);
+            self.wal_writer = ReaderWriterSeeker.initFile(new_wal_file);
+
+            return Self.MAX_SIZE;
+        }
+
+        pub fn recoverWalFile(chunks_file: File, alloc: Allocator) !RecoveredWal {
+            var reader = ReaderWriterSeeker.initFile(chunks_file);
+
+            var chunks = ArrayList(Chunk).init(alloc);
+
+            // store the first and last key of the entire index
+            var firstkey: ?Data = null;
+            var lastkey: ?Data = null;
+
+            const stat = try chunks_file.stat();
+            log.debug("WAL file has {} bytes", .{stat.size});
+
+            while (true) {
+                const chunk = Chunk.read(&reader, T, alloc) catch |err| {
+                    if (err == error.EndOfStream) {
+                        break;
+                    }
+
+                    return undefined;
+                };
+
+                // Update the first and last record from the index.
+                if (firstkey) |fk| {
+                    if (fk.compare(chunk.meta.firstkey)) {
+                        firstkey = chunk.meta.firstkey;
+                    }
+
+                    if (lastkey.?.compare(chunk.meta.lastkey)) {
+                        lastkey = chunk.meta.lastkey;
+                    }
+                } else {
+                    firstkey = chunk.meta.firstkey;
+                    lastkey = chunk.meta.lastkey;
+                }
+
+                try chunks.append(chunk);
+            }
+
+            if (firstkey == null) {
+                return Self.Error.EmptyWal;
+            }
+
+            return RecoveredWal{
+                .chunks = chunks,
+                .firstkey = firstkey.?,
+                .lastkey = lastkey.?,
+            };
+        }
+
+        pub fn recoverChunkFile(chunk_file: File, alloc: Allocator) !Chunk {
+            var tmpreader = ReaderWriterSeeker.initFile(chunk_file);
+
+            // store the first and last key of the entire index
+            var firstkey: ?Data = null;
+            var lastkey: ?Data = null;
+
+            const stattmp = try chunk_file.stat();
+            log.debug("Tmp file has {} bytes", .{stattmp.size});
+
+            // Read the records that weren't persisted as a chunk
+            var chunk = Chunk.init(T, alloc);
+            while (true) {
+                var data_or_error = Data.read(T, &tmpreader, alloc);
+                if (data_or_error) |data| {
+                    _ = try chunk.append(data);
+
+                    // Update the first and last record from the index.
+                    if (firstkey) |stored_key| {
+                        if (!stored_key.compare(data)) {
+                            firstkey = data;
                         }
-                    },
-                    inline else => return err,
+
+                        if (lastkey.?.compare(data)) {
+                            lastkey = data;
+                        }
+                    } else {
+                        firstkey = data;
+                        lastkey = data;
+                    }
+                } else |err| {
+                    if (err == error.EndOfStream) {
+                        break;
+                    } else {
+                        return err;
+                    }
                 }
-            };
+            }
 
-            return null;
+            if (firstkey == null) {
+                return error.EmptyChunk;
+            }
+
+            return chunk;
         }
-
-        fn switchTable(self: *Self, alloc: Allocator) !FileData {
-            log.debug("Persisting wal with ~{} records", .{self.table.meta.count * self.table.mem.items[0].mem.items.len});
-
-            //Get a new file to persist the wal
-            var fileData = try self.disk_manager.getNewFile("sst", alloc);
-            errdefer fileData.deinit();
-
-            var ws = ReaderWriterSeeker.initFile(fileData.file);
-            _ = try self.table.write(&ws);
-            self.table.deinit();
-            self.table = try DataTableWriter.init(T, alloc);
-
-            return fileData;
-        }
-
-        fn switchChunk(self: *Self, alloc: Allocator) !?FileData {
-            self.table.append(self.current) catch |switchChunkErr| {
-                switch (switchChunkErr) {
-                    ChunkError.TableFull => {
-                        var filedata = try self.switchTable(alloc);
-                        errdefer filedata.deinit();
-
-                        try self.table.append(self.current);
-                        self.current = DataChunk.init(T, alloc);
-
-                        return filedata;
-                    },
-                    inline else => return switchChunkErr,
-                }
-            };
-
-            self.current = DataChunk.init(T, alloc);
-
-            return null;
-        }
-
-        /// Finds the record in the current WAL in use
-        pub fn find(self: *Self, key: []const u8, alloc: Allocator) !?*Data {
-            return self.current.find(key, alloc);
-        }
-
-        pub fn totalRecords(self: *Self) usize {
-            return self.current.ctx.header.total_records;
+        pub fn debug(self: Self) void {
+            std.debug.print("\n___________\nSTART TableWriter\n", .{});
+            self.meta.debug();
+            std.debug.print("END TableWriter\n---------------\n", .{});
         }
     };
+}
+
+pub const RecoveredWal = struct {
+    chunks: ArrayList(Chunk),
+    firstkey: Data,
+    lastkey: Data,
+
+    pub fn deinit(self: *RecoveredWal) void {
+        for (self.chunks.items) |chunk| {
+            chunk.deinit();
+        }
+        self.chunks.deinit();
+        self.firstkey.deinit();
+        self.lastkey.deinit();
+    }
+};
+
+pub fn recoverWal(sm: *StorageManager, comptime T: type, alloc: Allocator) !?RecoveredWal {
+    const wal_files: ArrayList(File) = try sm.getFiles("wal", alloc);
+    defer wal_files.deinit();
+
+    if (wal_files.items.len == 0) {
+        return null;
+    }
+
+    if (wal_files.items.len > 1) {
+        return error.UnexpectedNumberOfWalFiles;
+    }
+
+    var file = wal_files.items[0];
+    const stat = try file.stat();
+    if (stat.size == 0) {
+        mustDeleteFile(file);
+    }
+
+    log.debug("Trying to recover file with fd {}", .{file.handle});
+
+    var recovered_wal = try Wal(T).recoverWalFile(file, alloc);
+    return recovered_wal;
+}
+
+pub fn recoverChunk(sm: *StorageManager, comptime T: type, alloc: Allocator) !?Chunk {
+    const chunk_files: ArrayList(File) = try sm.getFiles("chk", alloc);
+    defer chunk_files.deinit();
+
+    if (chunk_files.items.len == 0) {
+        return null;
+    }
+
+    if (chunk_files.items.len > 1) {
+        return error.UnexpectedNumberOfWalFiles;
+    }
+
+    var file = chunk_files.items[0];
+    const stat = try file.stat();
+    if (stat.size == 0) {
+        mustDeleteFile(file);
+    }
+
+    log.debug("Trying to recover file with fd {}", .{file.handle});
+
+    var chunk = try Wal(T).recoverChunkFile(file, alloc);
+    return chunk;
+}
+
+/// Silently deletes the provided file, logging an error in such case
+fn mustDeleteFile(file: File) void {
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var path = std.os.getFdPath(file.handle, &buf) catch |err| {
+        log.err("Could not get path from file description {}, aborting deletion of file: {}", .{ file.handle, err });
+        return;
+    };
+
+    fs.deleteFileAbsolute(path) catch |delete_error| {
+        log.err("Found empty file '{s}' but there was an error attempting to delete it: {}", .{ path, delete_error });
+    };
+}
+
+/// closes, truncates and reopen the incoming file, returning it
+fn resetTmpFile(file: File) !File {
+    defer file.close();
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    const path = try std.os.getFdPath(file.handle, &buf);
+    var new_file = try std.fs.createFileAbsolute(path, .{ .read = true, .truncate = true });
+    return new_file;
 }
 
 const expectEqual = std.testing.expectEqual;
 const expect = std.testing.expect;
 const expectEqualStrings = std.testing.expectEqualStrings;
 
-test "wal_append" {
+test "TestWal" {
+    std.testing.log_level = .debug;
+
+    // Setup
     var alloc = std.testing.allocator;
 
-    var dm = try DiskManager.init("/tmp", alloc);
+    var tmpdir = std.testing.tmpDir(.{});
+    defer tmpdir.cleanup();
+    var wal = try tmpdir.dir.createFile("TableWriter", File.CreateFlags{ .read = true });
+    var tmp = try tmpdir.dir.createFile("TestWalTmp", File.CreateFlags{ .read = true });
+    var table_file = try tmpdir.dir.createFile("TableWriter2", File.CreateFlags{ .read = true });
+    // defer wal.close();
+    // defer tmp.close();
+    // defer table_file.close();
+
+    var original_chunk = try ChunkNs.testChunk(alloc);
+    // deinit happens inside TableWriter
+
+    var table_writer = try Wal(Column).init(wal, tmp, alloc);
+    defer table_writer.deinit();
+    _ = try table_writer.appendChunk(original_chunk);
+
+    // DataTable write
+    const bytes_written: usize = try table_writer.persist(table_file);
+    try std.testing.expectEqual(@as(usize, Wal(Column).MAX_SIZE), bytes_written);
+}
+
+test "TestWal_append" {
+    var alloc = std.testing.allocator;
+
+    var dm = try StorageManager.init("/tmp", alloc);
     defer dm.deinit();
 
-    var wh = try WalHandler(Kv).init(dm, alloc);
+    var wh = try Wal(Kv).initWithStorageManager(&dm, alloc);
     defer wh.deinit();
 
-    var r = Data.new(Kv.new("hello", "world", Op.Upsert));
-    defer r.deinit();
-    const maybe_result = try wh.append(r, alloc);
-    if (maybe_result) |result| {
-        defer result.deinit();
-    }
+    var data = Data.new(Kv.new("hello", "world", Op.Upsert));
+    defer data.deinit();
+    _ = try wh.append(data);
 
-    try expectEqual(@as(usize, 1), wh.current.meta.count);
-    // try std.testing.expectError(RecordNS.Error.NullOffset, wh.current.ctx.mem[0].getOffset());
-    // try expect(r != wh.current.mem.items[0]);
-    try expectEqualStrings(r.kv.key, wh.current.mem.items[0].kv.key);
-    try expectEqualStrings(r.kv.val, wh.current.mem.items[0].kv.val);
+    try expectEqual(@as(usize, 1), wh.current_chunk.meta.count);
+    try expectEqualStrings(data.kv.key, wh.current_chunk.mem.items[0].kv.key);
+    try expectEqualStrings(data.kv.val, wh.current_chunk.mem.items[0].kv.val);
 
     var r2 = Data.new(Kv.new("hello2", "world2", Op.Upsert));
     defer r2.deinit();
 
-    const maybe_file_data = try wh.append(r2, alloc);
-    if (maybe_file_data) |file_data| {
-        defer file_data.deinit();
-    }
+    const result = try wh.append(r2);
+    if (result != Wal(Kv).AppendResult.Ok) return error.TestUnexpectedResult;
 
-    try expectEqual(@as(usize, 2), wh.current.meta.count);
-    // try expect(r2 != wh.current.mem.items[0]);
-    try expect(r2.kv.key.len != wh.current.mem.items[0].kv.key.len);
-    try expect(r2.kv.val.len != wh.current.mem.items[0].kv.val.len);
+    try expectEqual(@as(usize, 2), wh.current_chunk.meta.count);
+    // try expect(r2 != wh.current_chunk.mem.items[0]);
+    try expect(r2.kv.key.len != wh.current_chunk.mem.items[0].kv.key.len);
+    try expect(r2.kv.val.len != wh.current_chunk.mem.items[0].kv.val.len);
 }
 
-test "wal_test" {
+test "TestWal_test" {
     std.testing.log_level = .debug;
     var alloc = std.testing.allocator;
 
-    var dm = try DiskManager.init("/tmp/test", alloc);
+    var dm = try StorageManager.init("/tmp/test", alloc);
     defer dm.deinit();
 
-    var wal = try WalHandler(Column).init(dm, alloc);
+    var wal = try Wal(Column).initWithStorageManager(&dm, alloc);
     defer wal.deinit();
 
     for (0..5000) |i| {
-        var maybe_filedata = try wal.append(Data{ .col = Column{ .ts = std.time.nanoTimestamp(), .val = @as(f64, @floatFromInt(i)), .op = Op.Upsert } }, alloc);
-        if (maybe_filedata) |filedata| {
-            std.debug.print("Created file {s}\n", .{filedata.filename});
-            defer filedata.deinit();
-        }
+        _ = try wal.append(Data{ .col = Column{ .ts = std.time.nanoTimestamp(), .val = @as(f64, @floatFromInt(i)), .op = Op.Upsert } });
+    }
+}
+
+test "Test_recover" {
+    var alloc = std.testing.allocator;
+
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
+    var fdpath = try std.os.getFdPath(tmp_dir.dir.fd, &buf);
+
+    var sm = try StorageManager.init(fdpath, alloc);
+    defer sm.deinit();
+
+    // Create a Wal and write a couple of Data in it
+    const WalColumn = Wal(Column);
+    var wal = try WalColumn.initWithStorageManager(&sm, alloc);
+    defer wal.deinit();
+
+    // This should create a chunk
+    _ = try wal.append(Data{ .col = Column{ .ts = std.time.nanoTimestamp(), .op = Op.Upsert, .val = 1 } });
+    std.time.sleep(1000);
+    _ = try wal.append(Data{ .col = Column{ .ts = std.time.nanoTimestamp(), .op = Op.Upsert, .val = 2 } });
+
+    const result = try wal.switchChunk(alloc);
+    if (result != WalColumn.AppendResult.Ok) {
+        // defer wal.deinit();
+        try std.testing.expect(false);
+        return;
+    }
+
+    // Now add 2 more data
+    const res1 = try wal.append(Data{ .col = Column{ .ts = std.time.nanoTimestamp(), .op = Op.Upsert, .val = 3 } });
+    if (res1 != WalColumn.AppendResult.Ok) {
+        try std.testing.expect(false);
+    }
+    std.time.sleep(1000);
+    const res2 = try wal.append(Data{ .col = Column{ .ts = std.time.nanoTimestamp(), .op = Op.Upsert, .val = 4 } });
+    if (res2 != WalColumn.AppendResult.Ok) {
+        try std.testing.expect(false);
+    }
+
+    // So now we have a persisted chunk in the wal file with values 1 and 2 and a temp chunk
+    // in a chunk file with values 3 and 4
+    // Try to recover those files:
+    var maybe_recovered_chunk = try recoverChunk(&sm, Column, alloc);
+    var maybe_recovered_wal = try recoverWal(&sm, Column, alloc);
+
+    if (maybe_recovered_chunk) |chunk| {
+        try std.testing.expectEqual(@as(usize, 2), chunk.mem.items.len);
+        defer chunk.deinit();
+    } else {
+        try std.testing.expect(false);
+    }
+
+    if (maybe_recovered_wal) |*recovered_wal| {
+        try std.testing.expectEqual(@as(usize, 1), recovered_wal.chunks.items.len);
+        defer recovered_wal.deinit();
+    } else {
+        try std.testing.expect(false);
     }
 }
