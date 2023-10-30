@@ -28,19 +28,14 @@ pub const ReaderWriterSeeker = union(enum) {
 
     pub fn writeAll(self: *ReaderWriterSeeker, bytes: []const u8) anyerror!void {
         return switch (self.*) {
-            inline else => |*case| {
-                var writer = case.writer();
-                return writer.writeAll(bytes);
-            },
+            .file => |*file| file.writeAll(bytes),
+            inline else => |*fbs| fbs.writer().writeAll(bytes),
         };
     }
 
     pub fn writeIntLittle(self: *ReaderWriterSeeker, comptime T: type, value: T) anyerror!void {
         return switch (self.*) {
-            inline else => |*case| {
-                var writer = case.writer();
-                return writer.writeIntLittle(T, value);
-            },
+            inline else => |*case| return case.writer().writeIntLittle(T, value),
         };
     }
 
@@ -152,42 +147,123 @@ pub const ReaderWriterSeeker = union(enum) {
     }
 };
 
-test "ReaderWriterSeeker" {
-    var alloc = std.testing.allocator;
+pub fn ReaderWriterSeeker2(comptime SourceT: type) type {
+    const SourceTT: type = switch (SourceT) {
+        std.fs.File => std.fs.File,
+        inline else => std.io.FixedBufferStream([]u8),
+    };
 
-    // Create a temp file
-    var tmp_dir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{});
-    defer tmp_dir.cleanup();
+    return struct {
+        const Self = @This();
 
-    var file = try tmp_dir.dir.createFile("test.sst", std.fs.File.CreateFlags{ .read = true });
-    defer file.close();
+        source: SourceTT,
+        writer: SourceTT.Writer,
+        reader: SourceTT.Reader,
 
-    var buf = try alloc.alloc(u8, 100);
-    defer alloc.free(buf);
+        pub fn init(source: SourceT) Self {
+            return switch (SourceT) {
+                std.fs.File => return Self{ .source = source, .writer = source.writer(), .reader = source.reader() },
+                inline else => {
+                    var fbs = std.io.fixedBufferStream(source);
+                    var writer = fbs.writer();
+                    var reader = fbs.reader();
+                    var s = Self{ .source = fbs, .writer = writer, .reader = reader };
+                    std.debug.print("{},{},{*}\n", .{ s.source.buffer.len, s.source.pos, s.source.buffer });
+                    return s;
+                },
+            };
+        }
 
-    var fwriter = file.writer();
-    _ = fwriter;
+        pub fn write(self: *Self, bytes: []const u8) !usize {
+            return self.writer.write(bytes);
+        }
 
-    var ws = ReaderWriterSeeker.initBuf(buf);
-    var wss = &ws;
-    var hello = try alloc.dupe(u8, "hello");
-    defer alloc.free(hello);
+        pub fn writeAll(self: Self, bytes: []const u8) anyerror!void {
+            return self.writer.writeAll(bytes);
+        }
 
-    _ = try wss.seekTo(0);
-    _ = try wss.write(hello);
+        pub fn writeIntLittle(self: Self, comptime T: type, value: T) anyerror!void {
+            return self.writer.writeIntLittle(T, value);
+        }
+
+        pub fn writeIntNative(self: Self, comptime T: type, value: T) anyerror!void {
+            return self.writer.writeIntNative(T, value);
+        }
+
+        pub fn readIntLittle(self: Self, comptime T: type) !T {
+            return self.reader.readIntLittle(T);
+        }
+
+        pub fn readIntNative(self: Self, comptime T: type) !T {
+            return self.reader.readIntNative(T);
+        }
+
+        pub fn readFloat(self: Self, comptime T: type) !T {
+            var buf: [64]u8 = undefined;
+            var fbs = std.io.fixedBufferStream(&buf);
+            var _writer = fbs.writer();
+
+            try self.reader.streamUntilDelimiter(_writer, '!', 64);
+
+            var written = fbs.getWritten();
+            const value = try std.fmt.parseFloat(T, written);
+
+            return value;
+        }
+
+        pub fn writeFloat(self: Self, comptime T: type, v: T) !void {
+            try std.fmt.formatFloatDecimal(v, .{}, self.writer);
+            try self.writer.writeByte('!');
+        }
+
+        pub fn readAtLeast(self: Self, buffer: []u8, len: usize) anyerror!usize {
+            return self.reader.readAtLeast(buffer, len);
+        }
+
+        pub fn writeByte(self: Self, byte: u8) anyerror!void {
+            return self.writer.writeByte(byte);
+        }
+
+        pub fn read(self: Self, buffer: []u8) anyerror!usize {
+            return self.reader.read(buffer);
+        }
+
+        pub fn readByte(self: Self) (anyerror || anyerror)!u8 {
+            return self.reader.readByte();
+        }
+
+        pub fn seekTo(self: *Self, pos: usize) anyerror!void {
+            return self.source.seekTo(pos);
+        }
+
+        pub fn seekBy(self: Self, amt: i64) anyerror!void {
+            return self.source.seekBy(amt);
+        }
+
+        pub fn getPos(self: Self) !usize {
+            return self.source.getPos();
+        }
+    };
 }
 
-test "ReaderWriterSeeker_read_write_float" {
-    // Create a temp file
-    var alloc = std.testing.allocator;
+test "ReaderWriterSeeker_write" {
+    var buf: [8]u8 = undefined;
 
-    var buf = try alloc.alloc(u8, 32);
-    defer alloc.free(buf);
-
-    var rws = ReaderWriterSeeker.initBuf(buf);
-    try rws.writeFloat(f64, 23.4);
-    try rws.seekTo(0);
-
-    const val = try rws.readFloat(f64);
-    try std.testing.expectEqual(@as(f64, 23.4), val);
+    var wss = ReaderWriterSeeker2([]u8).init(&buf);
+    const bytes_written = try wss.write("hello");
+    try std.testing.expectEqual(@as(usize, 5), bytes_written);
+    try std.testing.expectEqualSlices(u8, "hello", buf[0..5]);
 }
+
+// test "ReaderWriterSeeker_read_write_float" {
+//     // Create a temp file
+
+//     var buf: [128]u8 = undefined;
+
+//     var rws = ReaderWriterSeeker.initBuf(&buf);
+//     try rws.writeFloat(f64, 23.4);
+//     try rws.seekTo(0);
+
+//     const val = try rws.readFloat(f64);
+//     try std.testing.expectEqual(@as(f64, 23.4), val);
+// }

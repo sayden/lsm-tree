@@ -11,6 +11,7 @@ const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeke
 const IndexEntry = @import("./index_entry.zig").IndexEntry;
 const MutableIterator = @import("./iterator.zig").MutableIterator;
 const Chunk = @import("./chunk.zig").Chunk;
+const Data = @import("./data.zig").Data;
 
 pub const FileIndex = struct {
     const log = std.log.scoped(.TableFileReader);
@@ -74,6 +75,16 @@ pub const FileIndex = struct {
         };
     }
 
+    pub fn isBetween(self: FileIndex, d: Data) ?IndexEntry {
+        for (self.indices.items) |index| {
+            if (d.compare(index.lastkey) or index.firstkey.compare(d) or index.firstkey.equals(d) or index.lastkey.equals(d)) {
+                return index;
+            }
+        }
+
+        return null;
+    }
+
     pub fn debug(self: FileIndex) void {
         std.debug.print("\n___________\nSTART TableReader\n", .{});
         self.meta.debug();
@@ -88,7 +99,6 @@ pub const FileIndex = struct {
 test "Wal_recover" {
     const Op = @import("./ops.zig").Op;
     const Column = @import("./columnar.zig").Column;
-    const Data = @import("./data.zig").Data;
     const Wal = @import("./wal.zig").Wal;
 
     // Setup

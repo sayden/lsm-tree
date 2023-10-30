@@ -119,6 +119,18 @@ pub const Kv = struct {
         } };
     }
 
+    pub fn cloneTo(self: Kv, other: *Data, alloc: Allocator) !void {
+        other.kv.op = self.op;
+        other.kv.ts = self.ts;
+        other.kv.key = try alloc.dupe(u8, self.key);
+        other.kv.val = try alloc.dupe(u8, self.val);
+        other.kv.alloc = alloc;
+    }
+
+    pub fn equals(self: Kv, other: Data) bool {
+        return std.mem.eql(u8, self.key, other.kv.key);
+    }
+
     pub fn debug(self: Kv, log: anytype) void {
         log.debug("\t\t[Row] Key: {s}, Ts: {}, Val: {s}\n", .{ self.key, self.ts, self.val });
     }

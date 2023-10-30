@@ -42,7 +42,8 @@ pub const StorageManager = struct {
         dm.alloc.free(dm.absolute_path);
     }
 
-    /// Callers must close the file when they are done with it.
+    /// Callers must close the file when they are done with it. Creates a new file with the extension provided in the
+    /// data directory. The file name will be a generated UUID
     pub fn getNewFile(self: *StorageManager, ext: []const u8) !File {
         var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
 
@@ -55,6 +56,8 @@ pub const StorageManager = struct {
         return file;
     }
 
+    /// By providing an extension, this returns a full path filename. The path is whatever was defined when creating the struct
+    /// (for example "/tmp/data") and a UUID filename.
     fn getNewFilename(dm: *StorageManager, ext: []const u8, buf: *[std.fs.MAX_PATH_BYTES]u8) ![]const u8 {
         var totalAttempts: usize = 0;
 

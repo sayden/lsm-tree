@@ -64,6 +64,18 @@ pub const Data = union(enum) {
         };
     }
 
+    pub fn cloneTo(self: Data, other: *Data, alloc: Allocator) !void {
+        return switch (self) {
+            inline else => |case| case.cloneTo(other, alloc),
+        };
+    }
+
+    pub fn equals(self: Data, other: Data) bool {
+        return switch (self) {
+            inline else => |case| case.equals(other),
+        };
+    }
+
     pub fn debug(self: Data, log: anytype) void {
         return switch (self) {
             inline else => |case| case.debug(log),

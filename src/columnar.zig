@@ -1,19 +1,16 @@
 const std = @import("std");
-const os = std.os;
-const system = std.os.system;
-const fs = std.fs;
-const math = std.math;
-const Op = @import("./ops.zig").Op;
+
 const Allocator = std.mem.Allocator;
 const ArrayList = std.ArrayList;
-const strings = @import("./strings.zig");
-const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
-const Iterator = @import("./iterator.zig").Iterator;
-const MutableIterator = @import("./iterator.zig").MutableIterator;
-const bytes = @import("./bytes.zig");
-const StringReader = bytes.StringReader;
-const StringWriter = bytes.StringWriter;
+const File = std.fs.File;
+const fs = std.fs;
+const math = std.math;
+const os = std.os;
+const system = std.os.system;
+
+const Op = @import("./ops.zig").Op;
 const Data = @import("./data.zig").Data;
+const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 
 const KeyLength = u16;
 const ValueLength = u16;
@@ -76,6 +73,12 @@ pub const Column = struct {
         } };
     }
 
+    pub fn cloneTo(self: Column, other: *Data, _: Allocator) !void {
+        other.col.op = self.op;
+        other.col.ts = self.ts;
+        other.col.val = self.val;
+    }
+
     /// Returns true if self < other
     pub fn compare(self: Column, other: Data) bool {
         return self.ts < other.col.ts;
@@ -92,6 +95,10 @@ pub const Column = struct {
     pub fn readIndexingValue(reader: *ReaderWriterSeeker, _: Allocator) !Data {
         const ts = try reader.readIntNative(i128);
         return Data{ .col = Column{ .ts = ts, .val = undefined, .op = Op.Upsert } };
+    }
+
+    pub fn equals(self: Column, other: Data) bool {
+        return self.ts == other.col.ts;
     }
 
     pub fn debug(self: Column, log: anytype) void {
