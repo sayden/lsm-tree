@@ -3,12 +3,18 @@ const Allocator = std.mem.Allocator;
 
 const UUID = @import("./pkg/zig-uuid/uuid.zig").UUID;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
-const Column = @import("./columnar.zig").Column;
 const Op = @import("./ops.zig").Op;
-const Data = @import("./data.zig").Data;
+const KV = @import("./kv.zig").Kv;
 
 const log = std.log.scoped(.Metadata);
 
+// Metadata is a struct that holds the metadata of a chunk, wal, or index.
+// id: a unique identifier for the metadata.
+// kind: the kind of metadata, can be Chunk, Wal, or Index.
+// firstkey: the first key of the metadata.
+// lastkey: the last key of the metadata.
+// magicnumber: a magic number to identify the metadata.
+// count: the number of elements in the metadata.
 pub const Metadata = struct {
     const MAX_SIZE = std.mem.page_size * 32;
     pub const Kind = enum {
@@ -19,13 +25,14 @@ pub const Metadata = struct {
 
     id: [36]u8,
     kind: Kind,
-    firstkey: Data,
-    lastkey: Data,
+    firstkey: KV,
+    lastkey: KV,
     magicnumber: u16 = 0,
     count: usize = 0,
 
-    pub fn init(kind: Kind, firstkey: Data, lastkey: Data) Metadata {
+    pub fn init(kind: Kind, firstkey: KV, lastkey: KV) Metadata {
         const uuid = UUID.init();
+
         var m = Metadata{
             .firstkey = firstkey,
             .lastkey = lastkey,
@@ -69,7 +76,7 @@ pub const Metadata = struct {
         try self.lastkey.writeIndexingValue(writer);
     }
 
-    pub fn updateSelfFirstAndLastKey(self: *Metadata, k: Data) void {
+    pub fn updateFirstAndLastKey(self: *Metadata, k: KV) void {
         if (k.compare(self.firstkey)) {
             self.firstkey = k;
             return;
@@ -80,12 +87,12 @@ pub const Metadata = struct {
         }
     }
 
-    pub fn updateFirstAndLastKey(original_first: *?Data, original_last: *?Data, meta: Metadata) void {
+    fn maybeUpdateFirstAndLastKey(original_first: *?KV, original_last: *?KV, meta: Metadata) void {
         updateKey(original_first, meta.firstkey);
         updateKey(original_last, meta.lastkey);
     }
 
-    pub fn updateKey(original: *?Data, key: Data) void {
+    fn updateKey(original: *?KV, key: KV) void {
         if (original.*) |original_key| {
             if (key.compare(original_key)) {
                 original.* = key;
@@ -113,33 +120,32 @@ pub const Metadata = struct {
 };
 
 test "Metadata_key_updates" {
-    var firstkey = Data{ .col = Column{ .ts = 100, .val = 0, .op = Op.Upsert } };
-    var new_later_key = Data{ .col = Column{ .ts = 120, .val = 0, .op = Op.Upsert } };
-    var initialNullData: ?Data = null;
-    Metadata.updateKey(&initialNullData, firstkey);
-    try std.testing.expect(initialNullData != null);
+    std.testing.log_level = .debug;
+    const firstkey = KV{ .ts = 100, .key = "hello", .val = "world", .op = Op.Upsert };
+    const new_later_key = KV{ .ts = 101, .key = "mario", .val = "caster", .op = Op.Upsert };
 
-    var meta = Metadata.initDefault(Metadata.Kind.Chunk, Column);
-
-    meta.updateSelfFirstAndLastKey(firstkey);
-    try std.testing.expectEqualDeep(firstkey, meta.firstkey);
-    meta.updateSelfFirstAndLastKey(new_later_key);
+    var meta = Metadata.initDefault(Metadata.Kind.Chunk, KV);
+    meta.updateFirstAndLastKey(firstkey);
+    meta.updateFirstAndLastKey(new_later_key);
+    meta.debug();
     try std.testing.expectEqualDeep(firstkey, meta.firstkey);
     try std.testing.expectEqualDeep(new_later_key, meta.lastkey);
-    const new_earlier = Data{ .col = Column{ .ts = 50, .val = 0, .op = Op.Upsert } };
-    meta.updateSelfFirstAndLastKey(new_earlier);
+
+    const new_earlier = KV{ .ts = 99, .val = "world", .key = "hello", .op = Op.Upsert };
+    try std.testing.expectEqualDeep(new_earlier, meta.firstkey);
+
+    try std.testing.expectEqualDeep(new_later_key, meta.lastkey);
     try std.testing.expectEqualDeep(new_earlier, meta.firstkey);
 }
 
 test "Metadata" {
-    const col1 = Column.new(99999, 123.2, Op.Upsert);
-    const data = Data.new(col1);
+    const firstkey = KV{ .ts = 100, .key = "hello", .val = "world", .op = Op.Upsert };
 
     var meta = Metadata{
         .kind = Metadata.Kind.Chunk,
         .id = undefined,
-        .firstkey = data,
-        .lastkey = data,
+        .firstkey = firstkey,
+        .lastkey = firstkey,
         .magicnumber = 123,
         .count = 456,
     };
@@ -153,13 +159,13 @@ test "Metadata" {
     try meta.write(&rws);
     try rws.seekTo(0);
 
-    var alloc = std.testing.allocator;
-    const meta2 = try Metadata.read(&rws, Column, alloc);
+    const alloc = std.testing.allocator;
+    const meta2 = try Metadata.read(&rws, KV, alloc);
     defer meta2.deinit();
 
     try std.testing.expectEqual(meta.magicnumber, meta2.magicnumber);
     try std.testing.expectEqual(meta.count, meta2.count);
-    try std.testing.expectEqual(meta.firstkey.col.ts, meta2.firstkey.col.ts);
-    try std.testing.expectEqual(meta.lastkey.col.ts, meta2.lastkey.col.ts);
+    try std.testing.expectEqual(meta.firstkey.ts, meta2.firstkey.ts);
+    try std.testing.expectEqual(meta.lastkey.ts, meta2.lastkey.ts);
     try std.testing.expectEqual(meta.kind, meta2.kind);
 }
