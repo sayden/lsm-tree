@@ -44,7 +44,7 @@ pub fn MutableIterator(comptime T: anytype) type {
                 return null;
             }
 
-            var ptr = self.items[self.pos];
+            const ptr = self.items[self.pos];
             self.pos += 1;
             return ptr;
         }

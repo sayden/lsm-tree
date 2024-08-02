@@ -7,19 +7,17 @@ pub fn StringReader(comptime String: type) type {
         const Self = @This();
 
         rw: *ReaderWriterSeeker,
-        alloc: Allocator,
 
-        pub fn init(rw: *ReaderWriterSeeker, alloc: Allocator) Self {
+        pub fn init(rw: *ReaderWriterSeeker) Self {
             return Self{
                 .rw = rw,
-                .alloc = alloc,
             };
         }
 
-        pub fn read(s: *Self) ![]u8 {
+        pub fn read(s: *Self, alloc: Allocator) ![]u8 {
             const length = try s.rw.readIntLittle(String);
-            var str: []u8 = try s.alloc.alloc(u8, length);
-            errdefer s.alloc.free(str);
+            const str: []u8 = try alloc.alloc(u8, length);
+            errdefer alloc.free(str);
 
             _ = try s.rw.readAtLeast(str, length);
             return str;
@@ -29,6 +27,24 @@ pub fn StringReader(comptime String: type) type {
             return s.rw.seekTo(pos);
         }
     };
+}
+
+test "StringReader.read" {
+    var alloc = std.testing.allocator;
+
+    const buf = try alloc.alloc(u8, 512);
+    defer alloc.free(buf);
+    var rw = ReaderWriterSeeker.initBuf(buf);
+
+    var sr = StringReader(u16).init(&rw);
+    try rw.writeIntLittle(u16, 5);
+    try rw.writeAll("hello");
+
+    try rw.seekTo(0);
+    const hello = try sr.read(alloc);
+    defer alloc.free(hello);
+
+    try std.testing.expectEqualStrings("hello", hello);
 }
 
 pub fn StringWriter(comptime String: type) type {
@@ -60,18 +76,16 @@ pub fn StringReaderWriter(comptime String: type) type {
 
         rw: *ReaderWriterSeeker,
 
-        alloc: Allocator,
-
-        pub fn init(rw: *ReaderWriterSeeker, alloc: std.mem.Allocator) Self {
+        pub fn init(rw: *ReaderWriterSeeker) Self {
             return Self{
                 .rw = rw,
-                .alloc = alloc,
             };
         }
 
-        pub fn read(s: *Self) ![]u8 {
+        // returned []u8 must be freed by the caller
+        pub fn read(s: *Self, alloc: Allocator) ![]u8 {
             const length = try s.rw.readIntLittle(String);
-            var str: []u8 = try s.alloc.alloc(u8, length);
+            const str: []u8 = try alloc.alloc(u8, length);
             _ = try s.rw.readAtLeast(str, length);
             return str;
         }
@@ -90,15 +104,15 @@ pub fn StringReaderWriter(comptime String: type) type {
 test "string_reader_writer" {
     var alloc = std.testing.allocator;
 
-    var buf = try alloc.alloc(u8, 512);
+    const buf = try alloc.alloc(u8, 512);
     defer alloc.free(buf);
     var rw = ReaderWriterSeeker.initBuf(buf);
 
-    var srw = StringReaderWriter(u16).init(&rw, alloc);
+    var srw = StringReaderWriter(u16).init(&rw);
     try srw.write("hello");
 
     try srw.seekTo(0);
-    var hello = try srw.read();
+    const hello = try srw.read(alloc);
     defer alloc.free(hello);
 
     try std.testing.expectEqualStrings("hello", hello);
