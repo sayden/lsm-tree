@@ -1,4 +1,4 @@
-const toml = @import("./pkg/zig-toml/src/toml.zig");
+const toml = @import("./src/pkg/zig-toml/src/toml.zig");
 const std = @import("std");
 
 pub fn Config() type {
@@ -22,7 +22,7 @@ pub fn Config() type {
             defer table.deinit();
 
             const data = table.keys.get("data") orelse unreachable;
-            var config = Self{ .dataPath = try alloc.dupe(u8, data.String), .alloc = alloc };
+            const config = Self{ .dataPath = try alloc.dupe(u8, data.String), .alloc = alloc };
 
             return config;
         }

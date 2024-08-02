@@ -9,12 +9,12 @@ comptime {
     _ = @import("storage_manager.zig");
     _ = @import("file_index.zig");
 
-    // _ = @import("header.zig");
-    // _ = @import("record.zig");
-    // _ = @import("sst.zig");
-    // _ = @import("sst_manager.zig");
+    _ = @import("header.zig");
+    _ = @import("record.zig");
+    _ = @import("sst.zig");
+    _ = @import("sst_manager.zig");
     // _ = @import("wal_handler.zig");
-    // _ = @import("wal.zig");
+    _ = @import("wal.zig");
 }
 
 // const StorageManager = @import("./storage_manager.zig").StorageManager;

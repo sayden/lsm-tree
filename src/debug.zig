@@ -1,7 +1,10 @@
 const std = @import("std");
 const clap = @import("./pkg/zig-clap/clap.zig");
+const HeaderNs = @import("./header.zig");
+const Header = HeaderNs.Header;
+const Record = @import("./record.zig").Record;
+const Pointer = @import("./record.zig").Pointer;
 const ReadWriteSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
-const Metadata = @import("./metadata.zig").Metadata;
 
 pub fn println(s: anytype) void {
     std.debug.print("{}\n", .{s});
@@ -19,8 +22,9 @@ pub fn main() !void {
     // First we specify what parameters our program can take.
     // We can use `parseParamsComptime` to parse a string into an array of `Param(Help)`
     const params = comptime clap.parseParamsComptime(
-        \\-h, --help            Display this help and exit.
-        \\-t, --type <str>      Type of the file
+        \\-h, --help             Display this help and exit.
+        \\-e, --header <str>   An option parameter, which takes a value.
+        \\-w, --wal <str>      An option parameter, which takes a value.
         \\<str>...
         \\
     );
@@ -51,7 +55,7 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     var alloc = gpa.allocator();
 
-    var buf = try alloc.alloc(u8, 500);
+    const buf = try alloc.alloc(u8, 500);
     defer alloc.free(buf);
 
     const abs_path = try std.fs.cwd().realpath(path, buf);
@@ -59,7 +63,15 @@ pub fn main() !void {
     defer file.close();
 
     var rs = ReadWriteSeeker.initFile(file);
-    var meta = try Metadata.read(&rs);
+    var h = try Header.read(&rs);
 
-    meta.debug();
+    h.debug();
+
+    const pointer = try Pointer.read(&rs, alloc);
+
+    const record = try pointer.readValue(&rs, alloc);
+    defer record.deinit();
+
+    pointer.debug();
+    record.debug();
 }

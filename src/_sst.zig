@@ -48,7 +48,7 @@ pub const Sst = struct {
             stored_records += 1;
         }
 
-        var s = Sst{
+        const s = Sst{
             .mem = mem,
             .alloc = alloc,
             .header = header,
@@ -70,7 +70,7 @@ pub const Sst = struct {
     }
 
     pub fn initWithIndex(index: *SstIndex, alloc: std.mem.Allocator) !*Sst {
-        var mem = try alloc.alloc(*Record, index.header.total_records);
+        const mem = try alloc.alloc(*Record, index.header.total_records);
         errdefer alloc.free(mem);
 
         var sst: Sst = Sst{
@@ -107,7 +107,7 @@ pub const Sst = struct {
 const expectEqualString = std.testing.expectEqualStrings;
 
 test "sst_readFile" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
     var file = try std.fs.cwd().openFile("./testing/example.sst", std.fs.File.OpenFlags{ .mode = .read_only });
     defer file.close();

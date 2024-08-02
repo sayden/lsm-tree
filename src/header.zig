@@ -63,17 +63,17 @@ pub const Header = struct {
         try reader.seekTo(0);
 
         //Magic number
-        var magic = try reader.readByte();
+        const magic = try reader.readByte();
 
-        var first_key = try reader.readIntLittle(usize);
-        var last_key = try reader.readIntLittle(usize);
+        const first_key = try reader.readIntLittle(usize);
+        const last_key = try reader.readIntLittle(usize);
 
-        var total_records = try reader.readIntLittle(usize);
+        const total_records = try reader.readIntLittle(usize);
 
         // Size of the records, only values without header or pointers
-        var records_size = try reader.readIntLittle(usize);
+        const records_size = try reader.readIntLittle(usize);
 
-        var pointers_size = try reader.readIntLittle(usize);
+        const pointers_size = try reader.readIntLittle(usize);
         const header_size = try reader.readIntLittle(usize);
         const level = try reader.readByte();
 
@@ -138,7 +138,7 @@ test "header_write_read" {
     _ = try header.write(&ws);
     try ws.seekTo(0);
 
-    var new_h = try Header.read(&ws);
+    const new_h = try Header.read(&ws);
     try expectEqual(new_h.magic_number, header.magic_number);
     try expectEqual(header.total_records, new_h.total_records);
     try expectEqual(header.records_size, new_h.records_size);

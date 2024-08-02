@@ -3,9 +3,6 @@ const Allocator = std.mem.Allocator;
 
 const HeaderNs = @import("./header.zig");
 const Header = HeaderNs.Header;
-const RecordNS = @import("./record.zig");
-const Record = RecordNS.Record;
-const Pointer = RecordNS.Pointer;
 const FileData = @import("./disk_manager.zig").FileData;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 const Sst = @import("./sst.zig").Sst;
@@ -21,7 +18,6 @@ pub const SstIndex = struct {
     header: Header,
     first_key: []const u8,
     last_key: []const u8,
-    pointers: []*Pointer,
     filedata: FileData,
 
     alloc: Allocator,
@@ -32,7 +28,7 @@ pub const SstIndex = struct {
 
         log.debug("Opening file {s}", .{path});
 
-        var file = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
+        const file = try std.fs.openFileAbsolute(path, std.fs.File.OpenFlags{});
         const filedata = FileData{
             .file = file,
             .filename = path,
@@ -62,7 +58,7 @@ pub const SstIndex = struct {
             pointers[i] = p;
         }
 
-        var s: *SstIndex = try alloc.create(SstIndex);
+        const s: *SstIndex = try alloc.create(SstIndex);
         s.* = SstIndex{
             .header = header,
             .first_key = try alloc.dupe(u8, pointers[0].key),
@@ -90,7 +86,7 @@ pub const SstIndex = struct {
     }
 
     pub fn size(self: *SstIndex) usize {
-        // TODO To use HeaderNs.headerSize() is not backwards compatible with headers that contain less information
+        // TODO: To use HeaderNs.headerSize() is not backwards compatible with headers that contain less information
         return self.header.pointers_size + self.header.records_size + HeaderNs.headerSize();
     }
 
@@ -115,7 +111,7 @@ pub const SstIndex = struct {
             return null;
         }
 
-        //TODO Fix this binary search that seems to not work
+        // TODO: Fix this binary search that seems to not work
         const i = std.sort.binarySearch(*Pointer, key, idx.pointers, {}, binarySearchFn);
         if (i) |index| {
             return idx.pointers[index];
@@ -133,11 +129,6 @@ pub const SstIndex = struct {
         return null;
     }
 
-    const PointerIterator = Iterator(*Pointer);
-    pub fn getPointersIterator(self: *SstIndex) PointerIterator {
-        return PointerIterator.init(self.pointers);
-    }
-
     fn retrieveRecordFromFile(idx: *SstIndex, p: *Pointer, alloc: Allocator) !*Record {
         try idx.filedata.file.seekTo(try p.getOffset());
         var ws = ReaderWriterSeeker.initFile(idx.filedata.file);
@@ -146,7 +137,7 @@ pub const SstIndex = struct {
 
     // checks if key is in the range of keys of this sst
     pub fn isBetween(self: *SstIndex, key: []const u8) bool {
-        return strcmp(key, self.firstKey()).compare(std.math.CompareOperator.gte) and strcmp(key, self.lastKey()).compare(std.math.CompareOperator.lte);
+        return strcmp(key, self.first_key).compare(std.math.CompareOperator.gte) and strcmp(key, self.last_key).compare(std.math.CompareOperator.lte);
     }
 
     pub fn debug(self: *SstIndex) void {
@@ -155,18 +146,18 @@ pub const SstIndex = struct {
 };
 
 test "sstindex_binary_search" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
     var idx = try SstIndex.init("./testing/example.sst", alloc);
     defer idx.deinit();
 
-    var maybe_pointer = idx.find("hello6");
+    const maybe_pointer = idx.find("hello6");
 
     try std.testing.expectEqualStrings(idx.pointers[6].key, maybe_pointer.?.key);
 }
 
 test "sstindex_init" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
     var idx = try SstIndex.init("testing/example.sst", alloc);
     defer idx.deinit();
 
@@ -176,7 +167,7 @@ test "sstindex_init" {
 }
 
 test "sstindex_find" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
     var idx = try SstIndex.init("testing/example.sst", alloc);
     defer idx.deinit();
 
@@ -190,7 +181,7 @@ test "sstindex_find" {
 }
 
 test "sstindex_isbetween" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
     var idx = try SstIndex.init("testing/example.sst", alloc);
     defer idx.deinit();
 
@@ -199,11 +190,11 @@ test "sstindex_isbetween" {
 }
 
 test "sstindex_retrieveRecordFromFile" {
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
     var idx = try SstIndex.init("testing/example.sst", alloc);
     defer idx.deinit();
 
-    var pointer = idx.find("hello1").?;
+    const pointer = idx.find("hello1").?;
     var record = try idx.retrieveRecordFromFile(pointer, alloc);
     defer record.deinit();
 

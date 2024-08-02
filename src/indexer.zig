@@ -7,21 +7,18 @@ const UUID = @import("./pkg/zig-uuid/uuid.zig").UUID;
 const OpNs = @import("./ops.zig");
 const StringsNs = @import("./strings.zig");
 const WalNs = @import("./wal.zig");
-const DiskManagerNs = @import("./disk_manager.zig");
-const WalHandlerNs = @import("./wal_handler.zig");
-
 const DebugNs = @import("./debug.zig");
 
 const Op = OpNs.Op;
 const Math = std.math;
 const Order = Math.Order;
-const DiskManager = DiskManagerNs.DiskManager;
-const WalHandler = WalHandlerNs.WalHandler;
 const Iterator = @import("./iterator.zig").Iterator;
-const FileData = DiskManagerNs.FileData;
 const ReaderWriterSeeker = @import("./read_writer_seeker.zig").ReaderWriterSeeker;
 const SstIndex = @import("./sst_index.zig").SstIndex;
 const strings = @import("./strings.zig");
+const FileManager = @import("./file_manager.zig").FileManager;
+const FileData = @import("./file_manager.zig").FileData;
+const Kv = @import("./kv.zig").Kv;
 
 const strcmp = StringsNs.strcmp;
 const sliceEqual = std.mem.eql;
@@ -38,8 +35,8 @@ pub const SstManager = struct {
 
     // total_files: usize = 0,
 
-    wh: *WalHandler,
-    disk_manager: *DiskManager,
+    // wh: *WalHandler,
+    disk_manager: *FileManager,
 
     // Those 2 probably needs to be null to support the use case where the
     // sstmanager do not have any index yet (so no first and last pointer)
@@ -102,10 +99,6 @@ pub const SstManager = struct {
         return mng;
     }
 
-    pub fn getIndicesCount(self: *Self) usize {
-        return self.indices.items.len;
-    }
-
     pub fn deinit(self: *Self) void {
         for (0..self.getIndicesCount()) |i| {
             self.indices.items[i].deinit();
@@ -122,29 +115,14 @@ pub const SstManager = struct {
         self.alloc.destroy(self);
     }
 
+    // TODO: Este parece legit
     fn addNewIndex(self: *Self, idx: *SstIndex) !void {
         try self.indices.append(idx);
         // self.total_files += 1;
         try self.updateFirstAndLastPointer(idx);
     }
 
-    fn updateFirstAndLastPointer(self: *Self, idx: *SstIndex) !void {
-        if (self.first_key) |f_key| {
-            if (strings.lte(idx.first_key, f_key)) {
-                var buf = self.alloc.realloc(self.firstkey.?, idx.first_key.len);
-                @memcpy(buf, idx.first_key);
-            }
-
-            if (strings.gte(idx.last_key, self.last_key.?)) {
-                var buf = self.alloc.realloc(self.last_key.?, idx.last_key.len);
-                @memcpy(buf, idx.last_key);
-            }
-        } else {
-            self.first_key = try self.alloc.dupe(u8, idx.firstKey());
-            self.last_key = try self.alloc.dupe(u8, idx.lastKey());
-        }
-    }
-
+    // FIXME: Delete?
     fn notifyNewIndexFilenameCreated(self: *Self, filename: []const u8) !void {
         const idx: *SstIndex = try SstIndex.init(filename, self.alloc);
         errdefer idx.deinit();
@@ -154,6 +132,7 @@ pub const SstManager = struct {
 
     /// Consumes filedata, giving ownership to the newly created index.
     /// Deinitialization happens when deinitializing self
+    // FIXME: Delete?
     fn notifyNewIndexFileCreated(self: *Self, filedata: FileData) !void {
         const idx: *SstIndex = try SstIndex.initFile(filedata, self.alloc);
         errdefer idx.deinit();
@@ -161,25 +140,22 @@ pub const SstManager = struct {
         try self.addNewIndex(idx);
     }
 
+    // TODO: Legit
     pub fn append(self: *Self, r: *Record) !void {
         return if (try self.wh.append(r, self.alloc)) |file_data| {
             try self.notifyNewIndexFileCreated(file_data);
         };
     }
 
+    // FIXME: Delete?
     pub fn appendOwn(self: *Self, r: *Record) !void {
         return if (try self.wh.appendOwn(r, self.alloc)) |file_data| {
             try self.notifyNewIndexFileCreated(file_data);
         };
     }
 
-    // Looks for the key in the WAL, if not present, checks in the indices
+    // TODO: Seems legit
     pub fn find(self: *Self, key: []const u8, alloc: Allocator) !?*Record {
-        // Check in wal first
-        if (try self.wh.find(key, alloc)) |record| {
-            return record;
-        }
-
         // if it does, retrieve the index (file) that contains the record
         const idx = self.findIndexForKey(key);
         if (idx) |index| {
@@ -189,27 +165,11 @@ pub const SstManager = struct {
         return null;
     }
 
-    pub fn totalRecords(self: *Self) usize {
-        var total: usize = 0;
-
-        var iter = self.getIterator();
-        while (iter.next()) |index| {
-            total += index.header.total_records;
-        }
-
-        return total + self.wh.totalRecords();
-    }
-
-    const IndexIterator = Iterator(*SstIndex);
-    fn getIterator(self: *Self) IndexIterator {
-        return IndexIterator.init(self.indices.items);
-    }
-
+    // FIXME: Delete?
     pub fn persist(self: *Self, alloc: Allocator) !?FileData {
         return self.wh.persistCurrent(alloc);
     }
 
-    // checks if key is in the range of keys
     pub fn isBetween(self: *Self, key: []const u8) bool {
         if (self.first_key) |first_key| {
             if (self.last_key) |last_key| {
@@ -239,22 +199,6 @@ pub const SstManager = struct {
         }
 
         return false;
-    }
-
-    fn lastKey(self: *Self) []const u8 {
-        return self.last_pointer.key;
-    }
-
-    fn setLastKey(self: *Self, new: []const u8) void {
-        self.last_pointer.key = new;
-    }
-
-    fn firstKey(self: *Self) []const u8 {
-        return self.first_pointer.key;
-    }
-
-    fn setFirstKey(self: *Self, new: []const u8) void {
-        self.first_pointer.key = new;
     }
 
     fn findIndexForKey(self: *Self, key: []const u8) ?*SstIndex {
@@ -324,7 +268,7 @@ const Compacter = struct {
         return filedata.?;
     }
 
-    // TODO Does not take into account the operation (records are never deleted)
+    // TODO: Does not take into account the operation (records are never deleted)
     pub fn compact2Indices(idx1: *SstIndex, idx2: *SstIndex, alloc: Allocator) !WalNs.Mem.Type {
         log.debug("Compacting lvl {} indices '{s}' and '{s}' with {} and {} records respectively", .{ idx1.header.level, idx1.header.id, idx2.header.id, idx1.header.total_records, idx2.header.total_records });
 
@@ -385,7 +329,7 @@ const Recoverer = struct {
     /// startRecover attempts to recover a wal written on a file in a post crash scenario. If a
     /// WAL is found it will write a SstIndex file with it, regardless of its current size.
     /// Compaction at a later stage should deal with a scenario where the WAL is "too small"
-    fn start(dm: *DiskManager, alloc: Allocator) !void {
+    fn start(dm: *FileManager, alloc: Allocator) !void {
         const file_entries = try dm.getFilenames("wal", alloc);
         defer {
             for (file_entries) |entry| {
@@ -423,7 +367,7 @@ const expectEqualStrings = std.testing.expectEqualStrings;
 const allocPrint = std.fmt.allocPrint;
 
 const testObj = struct {
-    dm: *DiskManager,
+    dm: *FileManager,
     wh: *WalHandler,
     s: *SstManager,
 
@@ -470,7 +414,7 @@ test "sstmanager_init" {
     var testdata = try createSandbox();
     defer testdata.deinit();
 
-    var dm = try DiskManager.init(testdata.path, alloc);
+    var dm = try FileManager.init(testdata.path, alloc);
     defer dm.deinit();
 
     var wh = try WalHandler.init(dm, 512, alloc);
@@ -504,7 +448,7 @@ test "sstmanager_find" {
     try expectEqual(@as(usize, 14), t.s.totalRecords());
 
     // this line appends an already existing key to the wal
-    var record = try Record.init("hello6", "new_world", Op.Upsert, alloc);
+    const record = try Record.init("hello6", "new_world", Op.Upsert, alloc);
     defer record.deinit();
 
     _ = try t.s.append(record);
@@ -519,7 +463,7 @@ test "sstmanager_find" {
 test "sstmanager_retrieve_record" {
     // std.testing.log_level = .debug;
 
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
     var t = try testObj.setup(alloc);
     defer t.teardown();
@@ -546,7 +490,7 @@ test "sstmanager_isBetween" {
         case: []const u8,
     };
 
-    var cases = [_]case{
+    const cases = [_]case{
         .{ .result = false, .case = "hello" },
         .{ .result = false, .case = "abc" },
         .{ .result = false, .case = "zzz" },
@@ -608,10 +552,10 @@ test "sst_manager_are_overlapping" {
     defer idx1.deinit();
     defer idx2.deinit();
 
-    var key1 = try alloc.dupe(u8, "hello50");
-    var key2 = try alloc.dupe(u8, "hello0");
-    var key3 = try alloc.dupe(u8, "hello100");
-    var key4 = try alloc.dupe(u8, "hello25");
+    const key1 = try alloc.dupe(u8, "hello50");
+    const key2 = try alloc.dupe(u8, "hello0");
+    const key3 = try alloc.dupe(u8, "hello100");
+    const key4 = try alloc.dupe(u8, "hello25");
 
     alloc.free(idx1.lastKey());
     alloc.free(idx1.firstKey());
@@ -629,7 +573,7 @@ test "sst_manager_are_overlapping" {
 test "compacter_attemptCompaction" {
     std.testing.log_level = .debug;
 
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
     var t = try testObj.setup(alloc);
     defer t.teardown();
@@ -648,24 +592,24 @@ test "compacter_attemptCompaction" {
 test "sst_manager_start_recover" {
     // std.testing.log_level = .debug;
 
-    var alloc = std.testing.allocator;
+    const alloc = std.testing.allocator;
 
-    var testdata = try createSandbox();
+    const testdata = try createSandbox();
 
-    const dm = try DiskManager.init(testdata.path, alloc);
+    const dm = try FileManager.init(testdata.path, alloc);
     defer dm.deinit();
 
     var wal = try WalNs.File.init(512, dm, alloc);
     defer wal.deinit();
 
     // 0 SST file must be in the provided folder
-    var files = try dm.getFilenames("sst", alloc);
+    const files = try dm.getFilenames("sst", alloc);
     try expectEqual(@as(usize, 2), files.len);
     freeSliceData(files, alloc);
 
-    try wal.appendOwn(try Record.init("broken0", "file0", Op.Upsert, alloc));
-    try wal.appendOwn(try Record.init("broken1", "file1", Op.Upsert, alloc));
-    try wal.appendOwn(try Record.init("broken2", "file2", Op.Upsert, alloc));
+    try wal.appendOwn(try Kv.init("broken0", "file0", Op.Upsert, alloc));
+    try wal.appendOwn(try Kv.init("broken1", "file1", Op.Upsert, alloc));
+    try wal.appendOwn(try Kv.init("broken2", "file2", Op.Upsert, alloc));
 
     var t = try testObj.setupTestdata(testdata, alloc);
     defer t.teardown();
@@ -681,12 +625,12 @@ test "sst_manager_start_recover" {
     try expectEqualStrings(r4.?.getVal(), "file0");
 
     // no more WAL files must be present in the folder
-    var files2 = try dm.getFilenames("wal", alloc);
+    const files2 = try dm.getFilenames("wal", alloc);
     try expectEqual(@as(usize, 0), files2.len);
     freeSliceData(files2, alloc);
 
     // 1 SST file must have been created, plus the 2 in a previous line in this test
-    var files3 = try dm.getFilenames("sst", alloc);
+    const files3 = try dm.getFilenames("sst", alloc);
     try expectEqual(@as(usize, 2), files3.len);
     freeSliceData(files3, alloc);
 }
@@ -715,12 +659,12 @@ const TestData = struct {
 };
 
 fn createSandbox() !TestData {
-    var tmpdir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{ .access_sub_paths = true });
+    const tmpdir = std.testing.tmpDir(std.fs.Dir.OpenDirOptions{ .access_sub_paths = true });
     var buf: [std.fs.MAX_PATH_BYTES]u8 = undefined;
-    var dir = tmpdir.dir;
+    const dir = tmpdir.dir;
     const abs_path = try std.os.getFdPath(dir.fd, &buf);
 
-    var testdata = TestData{
+    const testdata = TestData{
         .buf = buf,
         .dir = tmpdir,
         .path = abs_path,
@@ -735,16 +679,16 @@ fn createSandbox() !TestData {
 }
 
 fn copyFileToFolder(filepath: []const u8, dest_name: []const u8, folder: []const u8, alloc: Allocator) !std.fs.File {
-    var abs_filepath = try std.fs.realpathAlloc(alloc, filepath);
+    const abs_filepath = try std.fs.realpathAlloc(alloc, filepath);
     defer alloc.free(abs_filepath);
 
     var origin_file = try std.fs.openFileAbsolute(abs_filepath, std.fs.File.OpenFlags{});
     defer origin_file.close();
 
-    var abs_folderpath = try std.fs.realpathAlloc(alloc, folder);
+    const abs_folderpath = try std.fs.realpathAlloc(alloc, folder);
     defer alloc.free(abs_folderpath);
 
-    var abs_dest_file = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ abs_folderpath, dest_name });
+    const abs_dest_file = try std.fmt.allocPrint(alloc, "{s}/{s}", .{ abs_folderpath, dest_name });
     defer alloc.free(abs_dest_file);
 
     var new_file = try std.fs.createFileAbsolute(abs_dest_file, std.fs.File.CreateFlags{});
